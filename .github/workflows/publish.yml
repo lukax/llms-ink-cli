@@ -1,0 +1,25 @@
+# Publishes @lukax/llms-ink to npm on a version tag (v0.4.0), with npm trusted publishing (OIDC) and provenance.
+# This folder is mirrored from the private llms.ink repo by scripts/mirror.mjs; edit it there.
+name: Publish
+
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - name: Tag matches package.json
+        run: test "v$(node -p "require('./package.json').version")" = "$GITHUB_REF_NAME"
+      - run: npm test
+      - run: npm publish --provenance --access public

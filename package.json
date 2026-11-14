@@ -1,0 +1,20 @@
+{
+  "name": "@lukax/llms-ink",
+  "version": "0.4.0",
+  "description": "Turn any link — site, docs section, page, GitHub repo, PDF or video — into llms.txt and llms-full.txt for your AI. CLI for llms.ink.",
+  "type": "module",
+  "bin": { "llms-ink": "bin/llms-ink.js" },
+  "exports": "./src/cli.js",
+  "files": ["bin", "src", "README.md"],
+  "engines": { "node": ">=18.17" },
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "test:live": "node --test test/live.js"
+  },
+  "keywords": ["llms.txt", "llms-full.txt", "llm", "ai", "markdown", "docs", "context", "rag", "cli", "llms-ink"],
+  "homepage": "https://llms.ink/docs/",
+  "repository": { "type": "git", "url": "git+https://github.com/lukax/llms-ink-cli.git" },
+  "bugs": "https://github.com/lukax/llms-ink-cli/issues",
+  "author": "Lucas Espindola (https://lucasespindola.com)",
+  "license": "MIT"
+}
