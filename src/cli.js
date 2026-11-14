@@ -6,7 +6,7 @@ import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { parseArgs } from 'node:util';
 
-export const VERSION = '0.6.0';
+export const VERSION = '0.7.0';
 const DEFAULT_API = 'https://llms.ink';
 
 const HELP = `llms-ink ${VERSION} — any link into llms.txt, for your AI
@@ -20,6 +20,7 @@ Usage
   llms-ink parse <file|-|link>           print an llms.txt's title, summary, sections and links
   llms-ink report <link>                 what AI crawlers and agents see on a page, with fixes; exits 1 on any fail
   llms-ink generate <kind> <link>        draft AGENTS.md (agents-md), JSON-LD (jsonld), alt text (alt-text) or answer-first headings (answers)
+  llms-ink notion <link> --parent <page> save llms.txt (llms-full.txt with --full) as a Notion page; prints its URL
   llms-ink inspect --file <path>        hosted text inspection; enabled key required (inspect --help)
   llms-ink context [--manifest <f>]...   write version-pinned docs for your dependencies to .context/ (context --help)
 
@@ -34,6 +35,9 @@ Options
       --json          llms, check, parse, report, generate: the whole answer as JSON (parse: the parsed file)
       --base <url>    check, parse a file or -: its public URL, to resolve relative links
       --links         check a file or -: also check its links (and llms-full.txt next to --base)
+      --parent <p>    notion: the parent page, an ID or URL (shared with your Notion connection)
+      --title <t>     notion: the page title                            [the file's title]
+      --token <t>     notion: Notion connection token (or NOTION_TOKEN); never printed
       --quiet         nothing on stderr but errors
       --api <url>     API base URL (or LLMS_INK_API)                    [${DEFAULT_API}]
       --key <key>     API key for higher limits (or LLMS_INK_KEY); optional
@@ -51,6 +55,7 @@ Examples
   llms-ink parse llmstxt.org --json
   llms-ink report docs.example.com/guide  robots.txt per AI bot, text without JavaScript, Markdown, llms.txt
   llms-ink generate agents-md github.com/honojs/hono -o AGENTS.md   every line cites its source; review before committing
+  llms-ink notion docs.stripe.com/payments --full --parent https://www.notion.so/Research-1a2b3c4d5e6f47a8b9c0d1e2f3a4b5c6
   llms-ink context --max 5               docs for the 5 most imported dependencies, AGENTS.md block included
 
 Public links only. 60 new links a day per person; cached links are free.
@@ -180,7 +185,8 @@ async function save(res, dest, progress, stdout) {
   return got;
 }
 
-async function cmdLlms(api, url, values, ctx) {
+/** /api/v0/llms's answer for `url` (--full, --fresh and --generated apply), showing the seconds while the server works. */
+async function readLlms(api, url, values, ctx) {
   const params = new URLSearchParams({ url, mode: values.full ? 'full' : 'llms' });
   if (values.fresh) params.set('fresh', '1');
   if (values.generated) params.set('native', '0');
@@ -193,6 +199,11 @@ async function cmdLlms(api, url, values, ctx) {
     stop();
   }
   if (!result || typeof result.text !== 'string') throw new CliError('Unexpected answer from /api/llms.');
+  return result;
+}
+
+async function cmdLlms(api, url, values, ctx) {
+  const result = await readLlms(api, url, values, ctx);
   const summary = [result.kind, result.source, `${result.tokens.toLocaleString('en-US')} tokens`, `${result.pages} ${result.mode === 'full' ? 'pages' : 'links'}`, result.cached ? 'cached' : null].filter(Boolean).join(' · ');
   if (values.json) {
     ctx.progress.done('');
@@ -200,6 +211,32 @@ async function cmdLlms(api, url, values, ctx) {
   }
   ctx.progress.done('');
   await writeOut(result.text, values, fileNameFor(url, values.full), ctx, summary);
+}
+
+/** Saves a link's llms.txt (llms-full.txt with --full) as a Notion page under --parent; prints the page URL. The token is never printed. */
+async function cmdNotion(api, url, values, ctx) {
+  const { NotionError, markdownToPage, notionPageId, saveToNotion } = await import('./notion.js');
+  if (values.parent === undefined) throw new CliError('Give the parent page: llms-ink notion <link> --parent <page-id-or-url>', 2);
+  const parent = notionPageId(values.parent);
+  if (!parent) throw new CliError('--parent: a Notion page ID or URL (in Notion: Share → Copy link).', 2);
+  const token = (values.token ?? ctx.env.NOTION_TOKEN)?.trim();
+  if (!token) throw new CliError('Set NOTION_TOKEN to your Notion connection’s token (or pass --token), and share the parent page with that connection. Create one at https://app.notion.com/developers/connections', 2);
+  const result = await readLlms(api, url, values, ctx);
+  const { title, blocks } = markdownToPage(result.text, { title: values.title ?? result.title, source: result.url ?? url });
+  ctx.progress.say('Saving to Notion…');
+  let page;
+  try {
+    page = await saveToNotion({
+      token, parent, title, blocks, fetch: ctx.fetch,
+      onProgress: ({ done, total }) => ctx.progress.say(`Saving to Notion… ${done} of ${total} blocks`),
+      onWait: (seconds) => ctx.progress.say(`Notion asked to wait ${seconds}s…`),
+    });
+  } catch (err) {
+    if (!(err instanceof NotionError)) throw err;
+    throw new CliError(err.status === 401 ? `${err.message} Check NOTION_TOKEN or --token.` : err.message);
+  }
+  ctx.progress.done(`Saved “${title}” to Notion · ${plural(page.blocks, 'block')} · ${plural(page.requests, 'request')}`);
+  ctx.out(page.url);
 }
 
 /** Text to stdout, or to the file/folder -o names (the path goes to stdout then, for scripts). */
@@ -424,7 +461,8 @@ export async function main(io = {}) {
           full: { type: 'boolean' }, fresh: { type: 'boolean' }, output: { type: 'string', short: 'o' },
           time: { type: 'string', short: 't' }, width: { type: 'string', short: 'w' }, audio: { type: 'boolean' },
           json: { type: 'boolean' }, quiet: { type: 'boolean' }, api: { type: 'string' }, key: { type: 'string' }, generated: { type: 'boolean' },
-          base: { type: 'string' }, links: { type: 'boolean' }, help: { type: 'boolean', short: 'h' }, version: { type: 'boolean', short: 'v' },
+          base: { type: 'string' }, links: { type: 'boolean' }, parent: { type: 'string' }, title: { type: 'string' }, token: { type: 'string' },
+          help: { type: 'boolean', short: 'h' }, version: { type: 'boolean', short: 'v' },
         },
       });
     } catch (err) {
@@ -437,23 +475,25 @@ export async function main(io = {}) {
       return values.help ? 0 : 2;
     }
     let kind;
-    const commands = { frame: cmdFrame, media: cmdMedia, check: cmdCheck, parse: cmdParse, report: cmdReport, llms: cmdLlms, generate: (a, link, v, c) => cmdGenerate(a, kind, link, v, c) };
+    const commands = { frame: cmdFrame, media: cmdMedia, check: cmdCheck, parse: cmdParse, report: cmdReport, llms: cmdLlms, notion: cmdNotion, generate: (a, link, v, c) => cmdGenerate(a, kind, link, v, c) };
     let [command, url, ...rest] = positionals;
     if (!Object.hasOwn(commands, command)) [command, url, rest] = ['llms', positionals[0], positionals.slice(1)];
     if (command === 'generate') [kind, url, ...rest] = [url, ...rest];
-    const what = { check: 'a site, a file or -: llms-ink check <site|file|->', parse: 'a file, - or a link: llms-ink parse <file|-|link>', generate: `a kind and a link: llms-ink generate <${KINDS.join('|')}> <link>` }[command];
+    const what = { check: 'a site, a file or -: llms-ink check <site|file|->', parse: 'a file, - or a link: llms-ink parse <file|-|link>', generate: `a kind and a link: llms-ink generate <${KINDS.join('|')}> <link>`, notion: 'a link: llms-ink notion <link> --parent <page-id-or-url>' }[command];
     if (!url) throw new CliError(what ? `Give ${what}` : `Give a link: llms-ink ${command === 'llms' ? '' : `${command} `}<link>`, 2);
     if (rest.length) throw new CliError(`One link at a time (got “${rest[0]}” too).`, 2);
     const reads = command === 'check' || command === 'parse' || command === 'report';
-    if (command !== 'llms' && (values.full || (values.fresh && command !== 'generate') || values.generated)) throw new CliError(`--full, --fresh and --generated are for llms.txt, not ${command}.`, 2);
+    if (command !== 'llms' && command !== 'notion' && (values.full || (values.fresh && command !== 'generate') || values.generated)) throw new CliError(`--full, --fresh and --generated are for llms.txt, not ${command}.`, 2);
     if (command !== 'llms' && command !== 'generate' && !reads && values.json) throw new CliError(`--json is for llms.txt, check, parse, report and generate, not ${command}.`, 2);
     if (reads && values.output !== undefined) throw new CliError(`${command} prints its report; redirect it to save it.`, 2);
     if (command !== 'check' && command !== 'parse' && values.base !== undefined) throw new CliError('--base is for check and parse.', 2);
     if (command !== 'check' && values.links) throw new CliError('--links is for check.', 2);
     if (command !== 'frame' && (values.time !== undefined || values.width !== undefined)) throw new CliError('--time and --width are for frame.', 2);
     if (command !== 'media' && values.audio) throw new CliError('--audio is for media.', 2);
+    if (command !== 'notion' && (values.parent !== undefined || values.title !== undefined || values.token !== undefined)) throw new CliError('--parent, --title and --token are for notion.', 2);
+    if (command === 'notion' && values.output !== undefined) throw new CliError('notion saves to Notion and prints the page URL; -o isn’t used.', 2);
     const api = client(values.api ?? env.LLMS_INK_API ?? DEFAULT_API, (values.key ?? env.LLMS_INK_KEY)?.trim(), io.fetch ?? fetch);
-    const ctx = { out, stdout, stdin: io.stdin ?? process.stdin, cwd: io.cwd ?? process.cwd(), progress: reporter(stderr, !!values.quiet) };
+    const ctx = { out, env, fetch: io.fetch ?? fetch, stdout, stdin: io.stdin ?? process.stdin, cwd: io.cwd ?? process.cwd(), progress: reporter(stderr, !!values.quiet) };
     return (await commands[command](api, url, values, ctx)) ?? 0;
   } catch (err) {
     if (err instanceof CliError) {

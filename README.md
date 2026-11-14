@@ -25,6 +25,7 @@ Quote links that contain `?` or `&` (zsh and bash treat them specially).
 | `llms-ink parse <file\|-\|link>` | Prints an llms.txt's title, summary, and each section with its links. Exits `1` when there's no llms.txt or no `# ` title |
 | `llms-ink report <link>` | What AI crawlers and agents see on a page: robots.txt per AI bot, firewall blocks, text without JavaScript, Markdown, retrieval basics, agent files; each problem with its fix. Exits `1` on any `fail` |
 | `llms-ink generate <kind> <link>` | Drafts for you to review, built only from the source. `agents-md`: an AGENTS.md for a GitHub repo or docs site, each line ending with its source file and line. `jsonld`: a JSON-LD array (WebSite, Organization, Product, SoftwareApplication) of facts found on the site. `alt-text`: `alt="…"` for images without it. `answers`: a question heading and answer-first sentence per H2 section. Notes (what was found or rejected) go to stderr. Counts as a new link |
+| `llms-ink notion <link> --parent <page>` | Saves llms.txt (llms-full.txt with `--full`) as a new Notion page under the parent page and prints the page's URL. Needs a Notion connection token in `NOTION_TOKEN`. [Details](#save-to-notion-notion) |
 | `llms-ink context` | Writes version-pinned docs for your dependencies, trimmed to the APIs your code imports, to `.context/` and links them from AGENTS.md. [Details](#docs-for-your-dependencies-context) |
 
 ## Options
@@ -41,6 +42,9 @@ Quote links that contain `?` or `&` (zsh and bash treat them specially).
 | `--json` | The whole answer as JSON: for llms.txt url, kind, source, mode, title, text, tokens, pages, model, cached; for `check` the full report; for `parse` the parsed file (title, summary, details, sections and their links); for `report` every check with its fix and patch; for `generate` the drafts with their cites, sources and notes |
 | `--base <url>` | `check`, `parse` with a file or `-`: the file's public URL. Resolves relative links and heads the report |
 | `--links` | `check` with a file or `-`: also check its first 25 links, and llms-full.txt next to `--base` |
+| `--parent <page>` | `notion`: the parent page, as an ID or a URL (Share → Copy link) |
+| `--title <t>` | `notion`: the page title (default: the file's title) |
+| `--token <t>` | `notion`: a Notion connection token (also `NOTION_TOKEN`, which keeps it out of your shell history). Never printed |
 | `--quiet` | Nothing on stderr but errors |
 | `--api <url>` | Another API base URL (also `LLMS_INK_API`) |
 | `--key <key>` | Optional API key for higher limits (also `LLMS_INK_KEY`), sent as `Authorization: Bearer` |
@@ -59,6 +63,7 @@ llms-ink check public/llms.txt --base https://example.com/llms.txt --links   # i
 llms-ink report example.com/pricing --json | jq -r 'first(.sections[].checks[] | select(.fix.patch.file? == "/robots.txt") | .fix.patch.content)' > robots.txt.new
 llms-ink generate agents-md github.com/you/repo -o AGENTS.md   # then review: every line ends with <!-- file:line -->
 llms-ink generate jsonld example.com > jsonld.json
+llms-ink notion docs.stripe.com/payments --full --parent https://www.notion.so/Research-1a2b3c4d5e6f47a8b9c0d1e2f3a4b5c6
 cat llms.txt | llms-ink parse - --json | jq '.sections[].links[].url'
 ```
 
@@ -69,6 +74,32 @@ path (`./…`, `/…`, `~/…`, or a folder path ending in `.txt`/`.md` such as 
 Progress and a one-line summary (kind · source · tokens · links) go to stderr; stdout gets only the file, so it pipes
 cleanly. `check`, `parse` and `report` print their report on stdout. Exit codes: `0` done, `1` failed (the reason is printed),
 `check` found errors or broken links, `parse` found nothing to parse, or `report` found a `fail`, `2` wrong usage.
+
+## Save to Notion (`notion`)
+
+```sh
+export NOTION_TOKEN=ntn_…   # your connection's token
+llms-ink notion github.com/honojs/hono --parent https://www.notion.so/Research-1a2b3c4d5e6f47a8b9c0d1e2f3a4b5c6
+llms-ink notion docs.stripe.com/payments --full --parent 1a2b3c4d5e6f47a8b9c0d1e2f3a4b5c6 --title 'Stripe payments'
+```
+
+1. **Once**: create an internal connection at [app.notion.com/developers/connections](https://app.notion.com/developers/connections)
+   with the *Insert content* capability, put its token in `NOTION_TOKEN`, and share the parent page with it
+   (••• → Connections). The token goes only to `api.notion.com` and is never printed.
+2. **The page**: a child of `--parent`, titled with the file's title (or `--title`); a first `# ` heading that repeats
+   the title is left out. Headings (`####` and deeper become heading 3), paragraphs, bulleted, numbered and to-do lists
+   with their nesting, quotes, code blocks with their language (Notion's names, e.g. `ts` → TypeScript; otherwise plain
+   text), dividers, external images (`.png`, `.jpg`, `.gif`, `.svg`, …; other images become links), tables, and
+   bold, italic, code, strikethrough and http(s) links (other links stay as text). It ends with `Source: <link>`.
+3. **Output**: the page's URL on stdout; progress on stderr. Exit codes: `0` saved, `1` llms.ink or Notion refused (the
+   reason is printed; when Notion refuses after the page exists, the message names the incomplete page), `2` wrong
+   usage, such as no `--parent`, a parent that isn't a page ID or URL, or no token.
+
+It uses Notion's REST API (`Notion-Version: 2026-03-11`) within its limits: at most 100 blocks per request, text split
+into 2000-character pieces, two levels of nesting per request (deeper lists are appended level by level), and a
+`429` waits for `Retry-After` before retrying (up to 5 times). `--full`, `--fresh` and `--generated` work as they do for
+llms.txt, and reading the link counts toward the daily links the same way. The converter, `src/notion.js`, has no
+dependencies and no Node-only APIs (`markdownToBlocks`, `markdownToPage`, `saveToNotion`), so other surfaces can reuse it.
 
 ## Docs for your dependencies (`context`)
 

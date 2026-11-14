@@ -1,10 +1,10 @@
 {
   "name": "@lukax/llms-ink",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Turn any link — site, docs section, page, GitHub repo, PDF or video — into llms.txt and llms-full.txt for your AI. CLI for llms.ink.",
   "type": "module",
   "bin": { "llms-ink": "bin/llms-ink.js" },
-  "exports": "./src/cli.js",
+  "exports": { ".": "./src/cli.js", "./notion": "./src/notion.js" },
   "files": ["bin", "src", "README.md"],
   "engines": { "node": ">=18.17" },
   "scripts": {
