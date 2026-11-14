@@ -65,7 +65,17 @@ test('wrong usage exits 2 with a reason and makes no request', async () => {
     [['a.com', 'b.com'], /One link at a time/],
     [['frame', VIDEO, '--full'], /are for llms\.txt/],
     [['media', VIDEO, '--generated'], /are for llms\.txt/],
-    [['media', VIDEO, '--json'], /--json is for llms\.txt, check and parse/],
+    [['media', VIDEO, '--json'], /--json is for llms\.txt, check, parse, report and generate/],
+    [['generate'], /Give a kind and a link: llms-ink generate <agents-md\|jsonld\|alt-text\|answers> <link>/],
+    [['generate', 'agents-md'], /Give a kind and a link/],
+    [['generate', 'poem', 'llmstxt.org'], /Unknown kind “poem”: use agents-md, jsonld, alt-text, answers/],
+    [['generate', 'jsonld', 'a.com', 'b.com'], /One link at a time/],
+    [['generate', 'jsonld', 'a.com', '--full'], /are for llms\.txt/],
+    [['report'], /Give a link: llms-ink report <link>/],
+    [['report', 'llmstxt.org', '-o', 'x.txt'], /report prints its report/],
+    [['report', 'llmstxt.org', '--base', BASE], /--base is for check and parse/],
+    [['report', 'llmstxt.org', '--links'], /--links is for check/],
+    [['report', 'llmstxt.org', '--full'], /are for llms\.txt/],
     [['check'], /Give a site, a file or -: llms-ink check <site\|file\|->/],
     [['parse'], /Give a file, - or a link: llms-ink parse <file\|-\|link>/],
     [['parse', 'llmstxt.org', '-o', 'x.txt'], /parse prints its report/],
@@ -283,6 +293,41 @@ test('parse a link reads its published llms.txt (GET); nothing parseable exits 1
   assert.match(missingCheck.stdout, /^No llms\.txt found for https:\/\/llmstxt\.org\.\n/);
 });
 
+test('report prints the summary, the share link and each section with problems first and their fixes; exits 0 without a fail', async () => {
+  const r = await cli(['report', 'llmstxt.org/guide']);
+  assert.equal(r.code, 0, r.stderr);
+  assert.deepEqual(mock.requests, [{ path: '/api/v0/report', query: { url: 'llmstxt.org/guide' } }]);
+  assert.equal(r.stdout, [
+    'https://llmstxt.org/guide: 0 fail, 1 warn, 1 pass, 1 info',
+    `Share: ${mock.api}/report/?url=https%3A%2F%2Fllmstxt.org%2Fguide`,
+    '',
+    'Access',
+    '  · info  Training crawlers: All 6 training crawlers may use this page.',
+    '          fix: Your call.',
+    '  ✓ pass  AI search crawlers: robots.txt lets every AI search crawler read this page.',
+    '',
+    'Rendering',
+    '  ! warn  Text without JavaScript: Only 90 words in the HTML.',
+    '          fix: Render on the server.',
+    '',
+  ].join('\n'));
+});
+
+test('report exits 1 on any fail, pointing to the patch; --json prints the raw report; refusals are shown', async () => {
+  const blocked = await cli(['report', 'example.com/blocked', '--quiet']);
+  assert.equal(blocked.code, 1);
+  assert.equal(blocked.stderr, '');
+  assert.match(blocked.stdout, /^https:\/\/example\.com\/blocked: 1 fail, 1 warn, 0 pass, 1 info\n/);
+  assert.match(blocked.stdout, /\n {2}✕ fail {2}AI search crawlers: robots\.txt keeps OAI-SearchBot from this page\.\n {10}fix: Allow OAI-SearchBot in robots\.txt\. \(--json has the new \/robots\.txt\)\n/);
+  const json = await cli(['report', 'example.com/blocked', '--json', '--quiet']);
+  assert.equal(json.code, 1);
+  const report = JSON.parse(json.stdout);
+  assert.equal(report.sections[0].checks[0].fix.patch.content, 'User-agent: OAI-SearchBot\nAllow: /\n');
+  const limited = await cli(['report', 'example.com/limit']);
+  assert.equal(limited.code, 1);
+  assert.match(limited.stderr, /llms-ink: Daily limit reached/);
+});
+
 test('the installed command runs as a program: stdout, stdin, exit codes', async () => {
   const env = { ...process.env, LLMS_INK_API: mock.api, LLMS_INK_KEY: '' };
   const ok = await run(process.execPath, [BIN, 'llmstxt.org', '--quiet'], { env });
@@ -292,4 +337,29 @@ test('the installed command runs as a program: stdout, stdin, exit codes', async
   assert.match((await piped).stdout, /^Example\nDocs for Example\.\n/);
   await assert.rejects(run(process.execPath, [BIN, 'example.com/private'], { env }), (err) => err.code === 1 && /needs a login/.test(err.stderr));
   await assert.rejects(run(process.execPath, [BIN, '--nope'], { env }), (err) => err.code === 2);
+});
+
+test('generate prints usable drafts per kind, notes on stderr; -o saves; --json and --fresh pass through', async () => {
+  const agents = await cli(['generate', 'agents-md', 'github.com/acme/widget']);
+  assert.equal(agents.code, 0);
+  assert.equal(agents.stdout, '# AGENTS.md\n\n## Commands\n\n- `npm run build`: `tsc` <!-- package.json:4 -->\n');
+  assert.match(agents.stderr, /1 draft · written by stub\/model · cached\n {2}1 model line rejected: not supported by the sources\./);
+  assert.deepEqual(mock.requests.at(-1), { path: '/api/v0/generate', query: { url: 'github.com/acme/widget', kind: 'agents-md' } });
+
+  const jsonld = await cli(['generate', 'jsonld', 'widget.dev', '--fresh', '--quiet']);
+  assert.deepEqual(JSON.parse(jsonld.stdout).map((o) => o['@type']), ['WebSite', 'Organization'], 'one JSON-LD array, ready for a script tag');
+  assert.equal(jsonld.stderr, '');
+  assert.equal(mock.requests.at(-1).query.fresh, '1');
+  assert.equal((await cli(['generate', 'alt-text', 'widget.dev/gallery', '--quiet'])).stdout, '/chart.png\n  alt="Bar chart of &quot;sales&quot; by quarter"\n');
+  assert.equal((await cli(['generate', 'answers', 'widget.dev/guide', '--quiet'])).stdout, '<!-- was: ## Installation -->\n## How do you install Widget?\n\nRun `npm i widget`.\n');
+
+  const saved = await cli(['generate', 'agents-md', 'github.com/acme/widget', '-o', join(dir, 'AGENTS.md')]);
+  assert.match(await readFile(join(dir, 'AGENTS.md'), 'utf8'), /^# AGENTS\.md/);
+  assert.match(saved.stderr, /Saved AGENTS\.md · 1 draft/);
+  const json = await cli(['generate', 'answers', 'widget.dev/guide', '--json']);
+  assert.equal(JSON.parse(json.stdout).kind, 'answers');
+  const empty = await cli(['generate', 'answers', 'widget.dev/empty']);
+  assert.equal(empty.code, 0);
+  assert.equal(empty.stdout, '');
+  assert.match(empty.stderr, /0 drafts · written by stub\/model · cached\n {2}No H2 sections with text on this page\./);
 });

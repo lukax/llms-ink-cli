@@ -95,6 +95,21 @@ export async function startMock() {
         parsed: parseLlms(LLMS, 'https://llmstxt.org/llms.txt'), checkedAt: '2026-11-14T00:00:00.000Z',
       });
     }
+    if (url.pathname === '/api/v0/report') {
+      // "blocked" in the link: robots.txt keeps a search bot out (a fail, with a robots.txt patch); else warnings only.
+      const blocked = link.includes('blocked');
+      const checks = [
+        blocked
+          ? { id: 'bots-search', status: 'fail', title: 'AI search crawlers', detail: 'robots.txt keeps OAI-SearchBot from this page.', evidence: 'OAI-SearchBot: blocked by line 2 `Disallow: /`', fix: { kind: 'robots', summary: 'Allow OAI-SearchBot in robots.txt.', patch: { file: '/robots.txt', content: 'User-agent: OAI-SearchBot\nAllow: /\n' } } }
+          : { id: 'bots-search', status: 'pass', title: 'AI search crawlers', detail: 'robots.txt lets every AI search crawler read this page.' },
+        { id: 'bots-training', status: 'info', title: 'Training crawlers', detail: 'All 6 training crawlers may use this page.', fix: { kind: 'robots', summary: 'Your call.' } },
+      ];
+      const page = { id: 'raw-text', status: 'warn', title: 'Text without JavaScript', detail: 'Only 90 words in the HTML.', fix: { kind: 'html', summary: 'Render on the server.' } };
+      const sections = [{ id: 'access', title: 'Access', checks }, { id: 'rendering', title: 'Rendering', checks: [page] }];
+      const all = sections.flatMap((s) => s.checks);
+      const summary = Object.fromEntries(['pass', 'warn', 'fail', 'info'].map((k) => [k, all.filter((c) => c.status === k).length]));
+      return json(200, { url: `https://${link.replace(/^https?:\/\//, '')}`, site: `https://${link.replace(/^https?:\/\//, '').split('/')[0]}`, checkedAt: '2026-11-14T00:00:00.000Z', summary, sections });
+    }
     if (url.pathname === '/api/v0/frame') {
       res.writeHead(200, { 'content-type': 'image/jpeg', 'content-length': String(JPEG.length), 'content-disposition': `inline; filename="frame-${Number(url.searchParams.get('t')?.split(':').reduce((a, b) => a * 60 + Number(b), 0) ?? 0)}s.jpg"` });
       return res.end(JPEG);
@@ -103,6 +118,19 @@ export async function startMock() {
       const audio = url.searchParams.get('format') === 'm4a';
       res.writeHead(200, { 'content-type': audio ? 'audio/mp4' : 'video/mp4', 'content-length': String(MP4.length), 'content-disposition': `attachment; filename="Me at the zoo.${audio ? 'm4a' : 'mp4'}"; filename*=UTF-8''Me%20at%20the%20zoo.${audio ? 'm4a' : 'mp4'}` });
       return res.end(MP4);
+    }
+    if (url.pathname === '/api/v0/generate') {
+      // Drafts by kind, shaped like the API's; "empty" in the link: nothing to draft.
+      const kind = url.searchParams.get('kind');
+      const cite = (f) => ({ for: f, url: 'https://github.com/acme/widget/blob/main/package.json#L4', line: 4, quote: '"build": "tsc"' });
+      const drafts = link.includes('empty') ? [] : {
+        'agents-md': [{ title: 'AGENTS.md', format: 'markdown', content: '# AGENTS.md\n\n## Commands\n\n- `npm run build`: `tsc` <!-- package.json:4 -->\n', cites: [cite('`npm run build`: `tsc`')] }],
+        jsonld: [{ title: 'WebSite', format: 'json', content: '{\n  "@context": "https://schema.org",\n  "@type": "WebSite",\n  "name": "Widget"\n}', cites: [cite('WebSite.name')] }, { title: 'Organization', format: 'json', content: '{"@context":"https://schema.org","@type":"Organization","name":"Widget"}', cites: [cite('Organization.name')] }],
+        'alt-text': [{ title: '/chart.png', format: 'text', content: 'Bar chart of "sales" by quarter', target: '/chart.png', cites: [cite('alt')] }],
+        answers: [{ title: 'Installation', format: 'markdown', content: '## How do you install Widget?\n\nRun `npm i widget`.\n', target: 'Installation', cites: [cite('answer')] }],
+      }[kind];
+      if (!drafts) return json(400, { error: 'kind must be agents-md, jsonld, alt-text or answers.' });
+      return json(200, { kind, url: 'https://github.com/acme/widget', title: 'acme/widget', drafts, sources: [{ url: 'https://github.com/acme/widget/blob/main/package.json', title: 'package.json' }], notes: link.includes('empty') ? ['No H2 sections with text on this page.'] : ['1 model line rejected: not supported by the sources.'], model: 'stub/model', cached: !url.searchParams.has('fresh'), generatedAt: '2026-11-14T00:00:00.000Z' });
     }
     json(404, { error: 'Not found.' });
   });

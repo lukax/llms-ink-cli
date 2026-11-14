@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdtemp, open, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, open, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -81,4 +81,19 @@ test('parse reads a published llms.txt (GET /api/v0/check)', async (t) => {
   const parsed = JSON.parse((await run(['parse', 'llmstxt.org', '--json', '--quiet'])).stdout);
   assert.ok(parsed.title);
   assert.ok(parsed.sections.length > 0);
+});
+
+test('context writes pinned docs for a Go module from the real proxy and pkg.go.dev', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'llms-ink-context-live-'));
+  try {
+    await writeFile(join(dir, 'go.mod'), 'module example.com/app\n\ngo 1.22\n\nrequire github.com/spf13/cobra v1.8.1\n');
+    await writeFile(join(dir, 'main.go'), 'package main\n\nimport "github.com/spf13/cobra"\n\nfunc main() { _ = (&cobra.Command{}).Execute() }\n');
+    const { stdout } = await run(['context', '--manifest', join(dir, 'go.mod'), '--out', join(dir, '.context'), '--agents-md', join(dir, 'AGENTS.md'), '--max', '1', '--quiet']);
+    assert.match(stdout, /github\.com__spf13__cobra@v1\.8\.1\.md {2}\(pinned/);
+    const file = await readFile(join(dir, '.context', 'github.com__spf13__cobra@v1.8.1.md'), 'utf8');
+    assert.match(file, /sources:\n {2}- https:\/\/pkg\.go\.dev\/github\.com\/spf13\/cobra@v1\.8\.1\n/);
+    assert.match(file, /Command/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });

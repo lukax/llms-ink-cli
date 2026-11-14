@@ -6,7 +6,7 @@ import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { parseArgs } from 'node:util';
 
-export const VERSION = '0.4.0';
+export const VERSION = '0.5.0';
 const DEFAULT_API = 'https://llms.ink';
 
 const HELP = `llms-ink ${VERSION} — any link into llms.txt, for your AI
@@ -18,16 +18,19 @@ Usage
   llms-ink media <video> [--audio]       download the video (MP4) or its audio (M4A)
   llms-ink check <site|file|->           check an llms.txt (a site's, a local file or stdin): format and links
   llms-ink parse <file|-|link>           print an llms.txt's title, summary, sections and links
+  llms-ink report <link>                 what AI crawlers and agents see on a page, with fixes; exits 1 on any fail
+  llms-ink generate <kind> <link>        draft AGENTS.md (agents-md), JSON-LD (jsonld), alt text (alt-text) or answer-first headings (answers)
+  llms-ink context [--manifest <f>]...   write version-pinned docs for your dependencies to .context/ (context --help)
 
 Options
       --full          llms-full.txt instead of llms.txt
-      --fresh         rebuild instead of using the 24 h cache (counts as a new link)
+      --fresh         rebuild instead of using the 24 h cache (counts as a new link); also for generate
       --generated     always generate; never the site's own llms.txt (for a site whose llms.txt comes from llms.ink)
   -o, --output <p>    file or folder to save to; - for stdout
   -t, --time <t>      frame: when, as 90, 1:30 or 1:02:03                [0]
   -w, --width <px>    frame: maximum width, 160–1920                    [1280]
       --audio         media: the audio only (M4A)
-      --json          llms, check, parse: the whole answer as JSON (parse: the parsed file)
+      --json          llms, check, parse, report, generate: the whole answer as JSON (parse: the parsed file)
       --base <url>    check, parse a file or -: its public URL, to resolve relative links
       --links         check a file or -: also check its links (and llms-full.txt next to --base)
       --quiet         nothing on stderr but errors
@@ -45,6 +48,9 @@ Examples
   llms-ink check example.com             exits 1 on errors or broken links
   llms-ink check public/llms.txt --base https://example.com/llms.txt --links
   llms-ink parse llmstxt.org --json
+  llms-ink report docs.example.com/guide  robots.txt per AI bot, text without JavaScript, Markdown, llms.txt
+  llms-ink generate agents-md github.com/honojs/hono -o AGENTS.md   every line cites its source; review before committing
+  llms-ink context --max 5               docs for the 5 most imported dependencies, AGENTS.md block included
 
 Public links only. 60 new links a day per person; cached links are free.
 A free API key raises that to 1000 a day: ask at https://llms.ink/about/#limits`;
@@ -294,6 +300,72 @@ async function cmdParse(api, arg, values, ctx) {
   return 0;
 }
 
+const MARK = { fail: '✕', warn: '!', info: '·', pass: '✓' };
+const ORDER = { fail: 0, warn: 1, info: 2, pass: 3 };
+
+/** The agent's-eye report: a summary line and the share link, then each section's checks (problems first, with their fixes). Exits 1 on any fail. */
+async function cmdReport(api, url, values, ctx) {
+  const stop = ticking(ctx.progress, `Reading ${url} the way AI agents do`);
+  let r;
+  try {
+    const res = await api.call(`/api/v0/report?${new URLSearchParams({ url })}`);
+    r = await res.json().catch(() => null);
+  } finally {
+    stop();
+  }
+  if (!r?.summary || !Array.isArray(r.sections)) throw new CliError('Unexpected answer from /api/v0/report.');
+  ctx.progress.done('');
+  if (values.json) {
+    ctx.out(JSON.stringify(r, null, 2));
+  } else {
+    const { fail, warn, pass, info } = r.summary;
+    const lines = [`${r.url}: ${fail} fail, ${warn} warn, ${pass} pass, ${info} info`, `Share: ${api.base}/report/?${new URLSearchParams({ url: r.url })}`];
+    for (const s of r.sections) {
+      lines.push('', s.title);
+      for (const c of [...s.checks].sort((a, b) => ORDER[a.status] - ORDER[b.status])) {
+        lines.push(`  ${MARK[c.status] ?? '·'} ${c.status.padEnd(4)}  ${c.title}: ${c.detail}`);
+        if (c.fix && c.status !== 'pass') lines.push(`          fix: ${c.fix.summary}${c.fix.patch ? ` (--json has the new ${c.fix.patch.file})` : ''}`);
+      }
+    }
+    ctx.out(lines.join('\n'));
+  }
+  return r.summary.fail > 0 ? 1 : 0;
+}
+
+const KINDS = ['agents-md', 'jsonld', 'alt-text', 'answers'];
+
+/** Drafts as files people can use: AGENTS.md, a JSON-LD array, alt="…" per image, or answer-first sections. Notes go to stderr. */
+async function cmdGenerate(api, kind, url, values, ctx) {
+  if (!KINDS.includes(kind)) throw new CliError(`Unknown kind “${kind}”: use ${KINDS.join(', ')}.`, 2);
+  const params = new URLSearchParams({ url, kind });
+  if (values.fresh) params.set('fresh', '1');
+  const stop = ticking(ctx.progress, `Drafting ${kind} for ${url}`);
+  let r;
+  try {
+    const res = await api.call(`/api/v0/generate?${params}`);
+    r = await res.json().catch(() => null);
+  } finally {
+    stop();
+  }
+  if (!Array.isArray(r?.drafts) || !Array.isArray(r.notes)) throw new CliError('Unexpected answer from /api/v0/generate.');
+  const host = fileNameFor(r.url ?? url, false).replace(/-llms\.txt$/, '');
+  const summary = [`${plural(r.drafts.length, 'draft')} · ${r.model ? `written by ${r.model}` : 'extracted, no model'}${r.cached ? ' · cached' : ''}`, ...r.notes.map((n) => `  ${n}`)].join('\n');
+  ctx.progress.done('');
+  if (values.json) return writeOut(JSON.stringify(r, null, 2), values, `${kind}-${host}.json`, ctx, summary);
+  if (!r.drafts.length) {
+    ctx.progress.done(summary);
+    return 0;
+  }
+  const text = {
+    'agents-md': () => r.drafts[0].content,
+    jsonld: () => JSON.stringify(r.drafts.map((d) => JSON.parse(d.content)), null, 2),
+    'alt-text': () => r.drafts.map((d) => `${d.target}\n  alt="${d.content.replace(/"/g, '&quot;')}"`).join('\n'),
+    answers: () => r.drafts.map((d) => `<!-- was: ## ${d.target} -->\n${d.content.trimEnd()}`).join('\n\n'),
+  }[kind]();
+  const names = { 'agents-md': 'AGENTS.md', jsonld: `jsonld-${host}.json`, 'alt-text': `alt-text-${host}.txt`, answers: `answers-${host}.md` };
+  return writeOut(text, values, names[kind], ctx, summary);
+}
+
 async function cmdFrame(api, url, values, ctx) {
   const params = new URLSearchParams({ url, t: values.time === undefined ? '0' : parseTime(values.time) });
   if (values.width !== undefined) {
@@ -334,6 +406,10 @@ export async function main(io = {}) {
   const stderr = io.stderr ?? process.stderr;
   const out = (text) => stdout.write(`${text}\n`);
   try {
+    if (argv[0] === 'context') {
+      const { cmdContext } = await import('./context/index.js');
+      return await cmdContext(argv.slice(1), { env, stdout, stderr, cwd: io.cwd ?? process.cwd(), fetch: io.fetch ?? fetch, client, reporter });
+    }
     let parsed;
     try {
       parsed = parseArgs({
@@ -355,17 +431,19 @@ export async function main(io = {}) {
       (values.help ? stdout : stderr).write(`${HELP}\n`);
       return values.help ? 0 : 2;
     }
-    const commands = { frame: cmdFrame, media: cmdMedia, check: cmdCheck, parse: cmdParse, llms: cmdLlms };
+    let kind;
+    const commands = { frame: cmdFrame, media: cmdMedia, check: cmdCheck, parse: cmdParse, report: cmdReport, llms: cmdLlms, generate: (a, link, v, c) => cmdGenerate(a, kind, link, v, c) };
     let [command, url, ...rest] = positionals;
     if (!Object.hasOwn(commands, command)) [command, url, rest] = ['llms', positionals[0], positionals.slice(1)];
-    const what = { check: 'a site, a file or -: llms-ink check <site|file|->', parse: 'a file, - or a link: llms-ink parse <file|-|link>' }[command];
+    if (command === 'generate') [kind, url, ...rest] = [url, ...rest];
+    const what = { check: 'a site, a file or -: llms-ink check <site|file|->', parse: 'a file, - or a link: llms-ink parse <file|-|link>', generate: `a kind and a link: llms-ink generate <${KINDS.join('|')}> <link>` }[command];
     if (!url) throw new CliError(what ? `Give ${what}` : `Give a link: llms-ink ${command === 'llms' ? '' : `${command} `}<link>`, 2);
     if (rest.length) throw new CliError(`One link at a time (got “${rest[0]}” too).`, 2);
-    const reads = command === 'check' || command === 'parse';
-    if (command !== 'llms' && (values.full || values.fresh || values.generated)) throw new CliError(`--full, --fresh and --generated are for llms.txt, not ${command}.`, 2);
-    if (command !== 'llms' && !reads && values.json) throw new CliError(`--json is for llms.txt, check and parse, not ${command}.`, 2);
+    const reads = command === 'check' || command === 'parse' || command === 'report';
+    if (command !== 'llms' && (values.full || (values.fresh && command !== 'generate') || values.generated)) throw new CliError(`--full, --fresh and --generated are for llms.txt, not ${command}.`, 2);
+    if (command !== 'llms' && command !== 'generate' && !reads && values.json) throw new CliError(`--json is for llms.txt, check, parse, report and generate, not ${command}.`, 2);
     if (reads && values.output !== undefined) throw new CliError(`${command} prints its report; redirect it to save it.`, 2);
-    if (!reads && values.base !== undefined) throw new CliError('--base is for check and parse.', 2);
+    if (command !== 'check' && command !== 'parse' && values.base !== undefined) throw new CliError('--base is for check and parse.', 2);
     if (command !== 'check' && values.links) throw new CliError('--links is for check.', 2);
     if (command !== 'frame' && (values.time !== undefined || values.width !== undefined)) throw new CliError('--time and --width are for frame.', 2);
     if (command !== 'media' && values.audio) throw new CliError('--audio is for media.', 2);
