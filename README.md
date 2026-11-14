@@ -109,3 +109,19 @@ GitHub, never your code, and `LLMS_INK_KEY` goes only to llms.ink.
 Public links only. 60 new links a day per person; cached links (24 h) are free. A free API key raises that to 1000 a
 day: ask for one on [llms.ink/about](https://llms.ink/about/#limits). More at [llms.ink/docs](https://llms.ink/docs/),
 including the MCP server.
+
+## Hosted inspection (experimental, 0.6.0)
+
+```sh
+# Set LLMS_INK_INSPECT_KEY in your environment first.
+llms-ink inspect --file .context/project.md
+llms-ink inspect --file tools.json --output inspection-receipt.json
+```
+
+Requires an inspection-enabled pilot key. This explicitly uploads one `.md`, `.txt` or `.json` file inside the current folder. No crawl, globs, stdin or symlinks. JSON is inspected as exact UTF-8 text, including whitespace; its receipt digest matches the file bytes. Existing retrieval/context commands do not enable inspection.
+
+Output is receipt JSON with no source text. Exit 0 means complete/no finding; exit 1 means flagged, incomplete or failed; exit 2 means invalid input/setup. Any nonzero exit must stop delivery. A receipt is unsigned and no finding is not a safety guarantee. Changed bytes require another scan.
+
+`--output` writes a private receipt file without overwriting; parent directories must already exist. Failures remove the temporary output. The command validates the receipt digest, revisions, coverage and token counters. Redirects are refused; `LLMS_INK_API`, `--api` and `--key` cannot change inspection transport. Use `LLMS_INK_INSPECT_KEY` (fallback `LLMS_INK_KEY`), not a key on the command line. No automatic retries; admitted attempts consume pilot allowance. Requests have a 65-second deadline and a 128 KiB limit after encoding. Ctrl+C cancels the request.
+
+See [pilot access, limits and content handling](https://llms.ink/inspect/).

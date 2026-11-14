@@ -6,7 +6,7 @@ import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { parseArgs } from 'node:util';
 
-export const VERSION = '0.5.0';
+export const VERSION = '0.6.0';
 const DEFAULT_API = 'https://llms.ink';
 
 const HELP = `llms-ink ${VERSION} — any link into llms.txt, for your AI
@@ -20,6 +20,7 @@ Usage
   llms-ink parse <file|-|link>           print an llms.txt's title, summary, sections and links
   llms-ink report <link>                 what AI crawlers and agents see on a page, with fixes; exits 1 on any fail
   llms-ink generate <kind> <link>        draft AGENTS.md (agents-md), JSON-LD (jsonld), alt text (alt-text) or answer-first headings (answers)
+  llms-ink inspect --file <path>        hosted text inspection; enabled key required (inspect --help)
   llms-ink context [--manifest <f>]...   write version-pinned docs for your dependencies to .context/ (context --help)
 
 Options
@@ -406,6 +407,10 @@ export async function main(io = {}) {
   const stderr = io.stderr ?? process.stderr;
   const out = (text) => stdout.write(`${text}\n`);
   try {
+    if (argv[0] === 'inspect') {
+      const { cmdInspect } = await import('./inspect.js');
+      return await cmdInspect(argv.slice(1), { env, stdout, stderr, cwd: io.cwd ?? process.cwd(), fetch: io.fetch ?? fetch, signal: io.signal });
+    }
     if (argv[0] === 'context') {
       const { cmdContext } = await import('./context/index.js');
       return await cmdContext(argv.slice(1), { env, stdout, stderr, cwd: io.cwd ?? process.cwd(), fetch: io.fetch ?? fetch, client, reporter });
