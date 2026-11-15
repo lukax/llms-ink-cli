@@ -1,12 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, realpath, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 test('context publication respects creation permissions and preserves existing file mode', { skip: process.platform === 'win32' }, async () => {
-  const root = await mkdtemp(join(tmpdir(), 'ink-context-mode-'));
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'ink-context-mode-')));
   try {
     const module = new URL('../src/context/files.js', import.meta.url).href;
     const script = `import {writeIfChanged} from ${JSON.stringify(module)};
