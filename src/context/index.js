@@ -1,6 +1,6 @@
 // `llms-ink context`: version-pinned, code-relevant docs for a repo's dependencies in .context/, referenced from AGENTS.md.
-import { readFile, stat } from 'node:fs/promises';
-import { dirname, join, relative, resolve, sep } from 'node:path';
+import { readFile, realpath, stat } from 'node:fs/promises';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { parseArgs } from 'node:util';
 import { CliError, VERSION } from '../cli.js';
 import { resolveVersions } from './lockfiles.js';
@@ -9,6 +9,7 @@ import { agentsBlock, fileName, ownFiles, packageFile, readme, removeFile, updat
 import { findDocs } from './registry.js';
 import { scanSources, usageOf } from './scan.js';
 import { trimDocs } from './trim.js';
+import { outputDirectory, readOutput, validateOutputContent } from './files.js';
 
 export const CONTEXT_HELP = `llms-ink context — version-pinned docs for your dependencies, trimmed to what your code uses
 
@@ -29,6 +30,8 @@ Options
       --api <url>        API base URL (or LLMS_INK_API)
       --key <key>        API key for higher limits (or LLMS_INK_KEY); optional
 
+Output paths must not contain symlinks; existing output files must not be hard-linked.
+Writes replace individual files atomically. Do not modify output directories during a run.
 Each package fetched counts as a link toward llms.ink's daily limit (cached links are free).`;
 
 const ORDER = { npm: 0, pypi: 1, crates: 2, go: 3 };
@@ -156,15 +159,41 @@ export async function cmdContext(argv, io) {
   if (positionals.length) throw new CliError(`context takes options only (got “${positionals[0]}”); use --manifest <file>.`, 2);
   const max = integer(values.max, 'max', 1, 50, 10);
   const maxTokens = integer(values.tokens, 'tokens', 500, 50_000, 6000);
-  const { cwd } = io;
-  const outDir = resolve(cwd, values.out ?? '.context');
-  const agentsMd = values['agents-md'] === 'none' ? null : resolve(cwd, values['agents-md'] ?? 'AGENTS.md');
+  const lexicalCwd = resolve(io.cwd), cwd = await realpath(io.cwd);
+  const outputPath = (value) => {
+    const rel = relative(lexicalCwd, resolve(lexicalCwd, value));
+    return !isAbsolute(rel) && rel !== '..' && !rel.startsWith('..' + sep) ? resolve(cwd, rel) : resolve(cwd, value);
+  };
+  const outDir = outputPath(values.out ?? '.context');
+  const agentsMd = values['agents-md'] === 'none' ? null : outputPath(values['agents-md'] ?? 'AGENTS.md');
   const progress = io.reporter(io.stderr, !!values.quiet);
   const show = (p) => posix(relative(cwd, p)) || '.';
 
   const { deps, skipped } = await collect(await manifestsFor(values, cwd), { cwd, outDir });
   const chosen = deps.slice(0, max);
   for (const d of deps.slice(max)) skipped.push({ ecosystem: d.ecosystem, name: d.name, reason: `over the --max ${max} limit` });
+
+  // Validate every prospective destination before fetching. Repo-supplied links,
+  // malformed versions and broken merge markers must not cause partial writes.
+  await outputDirectory(outDir);
+  const existing = await ownFiles(outDir), previous = new Map(), filenames = new Map(), allocated = new Set();
+  for (const dep of chosen) {
+    let file = fileName(dep.name, dep.version);
+    if (allocated.has(file)) file = file.replace(/\.md$/, `.${dep.ecosystem}.md`);
+    if (allocated.has(file)) throw new CliError('Dependency output filenames collide. Review the selected manifests.');
+    allocated.add(file); filenames.set(dep, file);
+  }
+  for (const path of new Set([...existing.keys(), ...allocated, 'README.md'].map(file => join(outDir, file)).concat(agentsMd ? [agentsMd] : [])))
+    previous.set(path, await readOutput(path));
+  const managedPaths = new Set([...existing.keys(), ...allocated, 'README.md'].map(file => join(outDir, file)));
+  if (agentsMd && managedPaths.has(agentsMd)) throw new CliError('Context outputs overlap. Choose a separate AGENTS.md path.');
+  for (const file of allocated) if (previous.get(join(outDir, file)) !== null && !existing.has(file))
+    throw new CliError('A dependency output already exists without context generator metadata. Move it or choose another output directory.');
+  const indexBefore = previous.get(join(outDir, 'README.md'));
+  if (indexBefore !== null && (!indexBefore.startsWith('# Dependency docs\n\n') || !indexBefore.includes('Written by `llms-ink context` from the lockfiles;')))
+    throw new CliError('The output README.md is not a generated context index. Move it or choose another output directory.');
+  const agentsBefore = agentsMd ? previous.get(agentsMd) : null;
+  if (agentsMd) updateAgentsMd(agentsBefore, '');
 
   const api = io.client(values.api ?? io.env.LLMS_INK_API ?? 'https://llms.ink', (values.key ?? io.env.LLMS_INK_KEY)?.trim(), io.fetch);
   const http = registryHttp(io.fetch);
@@ -201,18 +230,15 @@ export async function cmdContext(argv, io) {
   });
   progress.done('');
 
-  const existing = await ownFiles(outDir);
   const keep = new Map();
-  const changes = [];
+  const changes = [], writes = [], removals = [];
   const entry = (file, fm) => ({ file, package: fm.package, ecosystem: fm.ecosystem, version: fm.version, docs: fm.docs, uses: fm.uses ?? [] });
   for (const r of results) {
     if (r.trimmed) {
-      let file = fileName(r.dep.name, r.dep.version);
-      if (keep.has(file)) file = file.replace(/\.md$/, `.${r.dep.ecosystem}.md`);
+      const file = filenames.get(r.dep);
       const content = packageFile(r);
-      const status = await writeIfChanged(join(outDir, file), content);
       keep.set(file, entry(file, { package: r.dep.name, ecosystem: r.dep.ecosystem, version: r.dep.version ?? 'unresolved', docs: r.docs.pinned ? 'pinned' : 'unpinned', uses: r.usage.symbols }));
-      changes.push([status, join(outDir, file), `${r.docs.pinned ? 'pinned' : 'unpinned'} · ${r.trimmed.tokens.toLocaleString('en-US')} tokens`]);
+      writes.push([join(outDir, file), content, `${r.docs.pinned ? 'pinned' : 'unpinned'} · ${r.trimmed.tokens.toLocaleString('en-US')} tokens`]);
       continue;
     }
     // A failed read keeps the package's earlier file, if any, rather than dropping docs over a transient error.
@@ -222,22 +248,28 @@ export async function cmdContext(argv, io) {
   }
   for (const file of existing.keys()) {
     if (keep.has(file)) continue;
-    await removeFile(join(outDir, file));
-    changes.push(['removed', join(outDir, file), '']);
+    removals.push(join(outDir, file));
   }
   const entries = [...keep.values()].sort((a, b) => compare(a.file, b.file));
   skipped.sort((a, b) => ORDER[a.ecosystem] - ORDER[b.ecosystem] || compare(a.name, b.name) || compare(a.reason, b.reason));
-  changes.push([await writeIfChanged(join(outDir, 'README.md'), readme(entries, skipped)), join(outDir, 'README.md'), 'index']);
+  writes.push([join(outDir, 'README.md'), readme(entries, skipped), 'index']);
   if (agentsMd) {
-    const before = await readFile(agentsMd, 'utf8').catch(() => null);
     let next;
     try {
-      next = updateAgentsMd(before, agentsBlock(entries, posix(relative(dirname(agentsMd), outDir)) || '.'));
+      next = updateAgentsMd(agentsBefore, agentsBlock(entries, posix(relative(dirname(agentsMd), outDir)) || '.'));
     } catch (err) {
       throw new CliError(`${show(agentsMd)}: ${err.message}`);
     }
-    changes.push([await writeIfChanged(agentsMd, next), agentsMd, 'docs block']);
+    writes.push([agentsMd, next, 'docs block']);
   }
+
+  if (new Set(writes.map(([path]) => path)).size !== writes.length || removals.some(path => writes.some(([dest]) => dest === path)))
+    throw new CliError('Context outputs overlap. Choose a separate AGENTS.md path.');
+  for (const [, content] of writes) validateOutputContent(content);
+  for (const [path, before] of previous) if (await readOutput(path) !== before)
+    throw new CliError('A context output changed while fetching. No files were written; review it and rerun.');
+  for (const [path, content, note] of writes) changes.push([await writeIfChanged(path, content, previous.get(path)), path, note]);
+  for (const path of removals) { await removeFile(path, previous.get(path)); changes.push(['removed', path, '']); }
 
   for (const [status, path, note] of changes) io.stdout.write(`${status.padEnd(9)} ${show(path)}${note ? `  (${note})` : ''}\n`);
   for (const s of skipped) progress.done(`not included: ${s.name} (${s.ecosystem}): ${s.reason}`);

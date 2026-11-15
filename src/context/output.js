@@ -1,7 +1,9 @@
 // .context/<pkg>@<version>.md files, the .context/README.md index and the AGENTS.md block. No timestamps: reruns with
 // the same lockfile, code and upstream docs write the same bytes.
-import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
+import { outputDirectory, readOutput } from './files.js';
+export { writeIfChanged, removeFile } from './files.js';
 
 export const GENERATOR = 'llms-ink context';
 export const START = '<!-- llms-ink:context:start -->';
@@ -9,7 +11,14 @@ export const END = '<!-- llms-ink:context:end -->';
 const ECOSYSTEM = { npm: 'npm', pypi: 'PyPI', crates: 'crates.io', go: 'Go' };
 
 /** `@scope/name` → `@scope__name`; Go module paths likewise. */
-export const fileName = (name, version) => `${name.replace(/\//g, '__')}@${version ?? 'latest'}.md`;
+export function fileName(name, version) {
+  if (typeof name !== 'string' || !/^@?[A-Za-z0-9][A-Za-z0-9@._~+/-]*$/.test(name)
+      || (version !== null && (typeof version !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9.!+_~-]{0,127}$/.test(version))))
+    throw new Error('Unsafe dependency name or version. Review the manifest and lockfile before generating context.');
+  const file = `${name.replace(/\//g, '__')}@${version ?? 'latest'}.md`;
+  if (Buffer.byteLength(file) > 240) throw new Error('A dependency filename is too long. Review the manifest and lockfile.');
+  return file;
+}
 
 /** A YAML scalar: plain when safe (no indicator first, not a bool/null/number look-alike), else JSON-quoted (valid YAML). */
 const scalar = (v) => {
@@ -112,28 +121,28 @@ export function updateAgentsMd(existing, block) {
   const start = existing.indexOf(START);
   const end = existing.indexOf(END);
   if (start === -1 && end === -1) return `${existing.replace(/\s*$/, '')}\n\n${block}\n`;
-  if (start === -1 || end === -1 || end < start) throw new Error(`Found only one of ${START} and ${END}; fix the markers by hand.`);
+  if (start === -1 || end === -1 || end < start || existing.indexOf(START, start + START.length) !== -1 || existing.indexOf(END, end + END.length) !== -1)
+    throw new Error(`Expected exactly one ordered pair of ${START} and ${END}; fix the markers by hand.`);
   return `${existing.slice(0, start)}${block}${existing.slice(end + END.length)}`;
-}
-
-/** Writes `content` unless the file already holds exactly that. Returns 'created' | 'updated' | 'unchanged'. */
-export async function writeIfChanged(path, content) {
-  const before = await readFile(path, 'utf8').catch(() => null);
-  if (before === content) return 'unchanged';
-  await mkdir(join(path, '..'), { recursive: true });
-  await writeFile(path, content);
-  return before === null ? 'created' : 'updated';
 }
 
 /** Files in `dir` that this command wrote (by their front matter): `Map<file, frontMatter>`, sorted by name. */
 export async function ownFiles(dir) {
-  const names = (await readdir(dir).catch(() => [])).filter((n) => n.endsWith('.md') && n !== 'README.md').sort();
+  if (!await outputDirectory(dir)) return new Map();
+  const names = (await readdir(dir)).filter((n) => n.endsWith('.md') && n !== 'README.md').sort();
   const out = new Map();
   for (const name of names) {
-    const fm = readFrontMatter(await readFile(join(dir, name), 'utf8').catch(() => ''));
-    if (fm) out.set(name, fm);
+    const fm = readFrontMatter(await readOutput(join(dir, name)));
+    if (fm) {
+      // Retained files can enter README/AGENTS on a failed fetch. Their metadata
+      // is repository input too, not authority to inject a new instruction block.
+      fileName(fm.package, fm.version);
+      if (!/^[A-Za-z0-9@][A-Za-z0-9@._~+!-]*\.md$/.test(name) || !Object.hasOwn(ECOSYSTEM, fm.ecosystem)
+          || !['pinned', 'unpinned'].includes(fm.docs) || !Array.isArray(fm.uses)
+          || fm.uses.length > 20 || fm.uses.some(value => typeof value !== 'string' || value.length > 512 || /[\x00-\x1f\x7f`]/.test(value)))
+        throw new Error('Invalid retained context metadata. Review the existing generated file before rerunning.');
+      out.set(name, fm);
+    }
   }
   return out;
 }
-
-export const removeFile = (path) => rm(path, { force: true });

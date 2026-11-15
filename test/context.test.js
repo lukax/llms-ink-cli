@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile, symlink, link } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { Writable } from 'node:stream';
@@ -341,8 +341,8 @@ test('AGENTS.md block: created, appended once, replaced in place, malformed mark
   const replaced = updateAgentsMd(`${appended}\n## After\n\nKeep me.\n`, next);
   assert.equal(replaced, `# Rules\n\nBe brief.\n\n${next}\n\n## After\n\nKeep me.\n`);
   assert.equal(updateAgentsMd(replaced, next), replaced);
-  assert.throws(() => updateAgentsMd(`x\n${START}\nno end`, block), /Found only one/);
-  assert.throws(() => updateAgentsMd(`${END}\n${START}`, block), /Found only one/);
+  assert.throws(() => updateAgentsMd(`x\n${START}\nno end`, block), /exactly one ordered pair/);
+  assert.throws(() => updateAgentsMd(`${END}\n${START}`, block), /exactly one ordered pair/);
 });
 
 test('front matter round-trips and file names are safe', () => {
@@ -465,4 +465,114 @@ test('context: failed reads keep earlier files; all failing exits 1; usage error
   const help = await context(world, ['--help']);
   assert.equal(help.code, 0);
   assert.match(help.stdout, /llms-ink context \[--manifest <file>\]/);
+});
+
+for (const location of ['output directory', 'output parent', 'package file', 'index file', 'agents file']) {
+  test(`context refuses a symlink at the ${location} before fetching or writing`, async () => {
+    const world = makeWorld(); seed(world); await fixture(FIXTURES.npm);
+    const outside = join(dir, 'outside'); await mkdir(outside);
+    const victim = join(outside, 'sentinel.md'); await writeFile(victim, '# Keep this\n');
+    let args = ['--quiet', '--max', '1'];
+    if (location === 'output directory') await symlink(outside, join(dir, '.context'), 'dir');
+    else if (location === 'output parent') { await symlink(outside, join(dir, 'docs'), 'dir'); args.push('--out', 'docs/context'); }
+    else if (location === 'agents file') await symlink(victim, join(dir, 'AGENTS.md'));
+    else { await mkdir(join(dir, '.context')); await symlink(victim, join(dir, '.context', location === 'package file' ? 'zod@3.23.8.md' : 'README.md')); }
+    const result = await context(world, args);
+    assert.notEqual(result.code, 0, result.stdout);
+    assert.equal(await readFile(victim, 'utf8'), '# Keep this\n');
+    assert.deepEqual(await readdir(outside), ['sentinel.md']);
+    assert.equal(world.requests.length, 0);
+  });
+}
+
+test('context rejects a lockfile version that would escape the output directory', async () => {
+  const world = makeWorld(); seed(world); await fixture(FIXTURES.npm);
+  await writeFile(join(dir, 'victim.md'), '# Keep this\n');
+  await writeFile(join(dir, 'package-lock.json'), FIXTURES.npm['package-lock.json'].replace('3.23.8', 'x/../../victim'));
+  world.routes.set('https://registry.npmjs.org/zod/latest', { name: 'zod', version: '3.23.8', homepage: 'https://left-pad.example/docs' });
+  const result = await context(world, ['--quiet', '--max', '1']);
+  assert.notEqual(result.code, 0, result.stdout);
+  assert.equal(await readFile(join(dir, 'victim.md'), 'utf8'), '# Keep this\n');
+  assert.equal(world.requests.length, 0);
+});
+
+test('context refuses hard-linked merge input without changing its other name', async () => {
+  const world = makeWorld(); seed(world); await fixture(FIXTURES.npm);
+  const victim = join(dir, 'sentinel.md'); await writeFile(victim, '# Keep this\n');
+  await link(victim, join(dir, 'AGENTS.md'));
+  const result = await context(world, ['--quiet', '--max', '1']);
+  assert.notEqual(result.code, 0);
+  assert.equal(await readFile(victim, 'utf8'), '# Keep this\n');
+  assert.equal(world.requests.length, 0);
+});
+
+test('context validates AGENTS markers before changing the pack', async () => {
+  const world = makeWorld(); seed(world); await fixture(FIXTURES.npm);
+  await writeFile(join(dir, 'AGENTS.md'), '# Keep this\n'+START+'\n');
+  const before = await snapshot(dir);
+  const result = await context(world, ['--quiet', '--max', '1']);
+  assert.notEqual(result.code, 0);
+  assert.deepEqual(await snapshot(dir), before);
+  assert.equal(world.requests.length, 0);
+});
+
+for (const filename of ['zod@3.23.8.md', 'README.md']) test(`context preserves an unmanaged ${filename}`, async () => {
+  const world = makeWorld(); seed(world); await fixture(FIXTURES.npm);
+  await fixture({ [filename]: '# My notes\n' }, join(dir, '.context'));
+  const before = await snapshot(dir), result = await context(world, ['--quiet', '--max', '1']);
+  assert.notEqual(result.code, 0); assert.deepEqual(await snapshot(dir), before); assert.equal(world.requests.length, 0);
+});
+
+for (const target of ['.context/README.md', '.context/zod@3.23.8.md']) test('context rejects overlapping outputs: '+target, async () => {
+  const world = makeWorld(); seed(world); await fixture(FIXTURES.npm);
+  const before = await snapshot(dir), result = await context(world, ['--quiet', '--max', '1', '--agents-md', target]);
+  assert.notEqual(result.code, 0); assert.deepEqual(await snapshot(dir), before); assert.equal(world.requests.length, 0);
+});
+
+for (const change of ['new file', 'agents edit', 'directory link']) test('context catches output changes during fetching: '+change, async () => {
+  const world = makeWorld(); seed(world); await fixture(FIXTURES.npm);
+  const originalFetch = world.fetch; let changed = false;
+  const victim = join(dir, 'outside'); await mkdir(victim); await writeFile(join(victim, 'sentinel.md'), '# Keep this\n');
+  world.fetch = async (...args) => {
+    if (!changed) {
+      changed = true;
+      if (change === 'new file') await fixture({ 'zod@3.23.8.md': '# Concurrent file\n' }, join(dir, '.context'));
+      else if (change === 'agents edit') await writeFile(join(dir, 'AGENTS.md'), '# Concurrent edit\n');
+      else await symlink(victim, join(dir, '.context'), 'dir');
+    }
+    return originalFetch(...args);
+  };
+  const result = await context(world, ['--quiet', '--max', '1']);
+  assert.notEqual(result.code, 0); assert.equal(result.stdout, '');
+  assert.deepEqual(await readdir(victim), ['sentinel.md']); assert.equal(await readFile(join(victim, 'sentinel.md'), 'utf8'), '# Keep this\n');
+  if (change === 'new file') assert.equal(await readFile(join(dir, '.context/zod@3.23.8.md'), 'utf8'), '# Concurrent file\n');
+  if (change === 'agents edit') assert.equal(await readFile(join(dir, 'AGENTS.md'), 'utf8'), '# Concurrent edit\n');
+});
+
+test('filename bounds preserve supported release forms and reject path/control characters', () => {
+  for (const version of ['1!2.0rc1+local', 'v0.0.0-20261011123456-abcdef123456', '1.2.3-beta.1+build.4']) assert.ok(fileName('example', version).endsWith('.md'));
+  for (const version of ['../x', 'x/../../victim', 'x\\..\\victim', '\n<!-- llms-ink:context:end -->', '1.2.3\u0000', 'a'.repeat(129), '..'])
+    assert.throws(() => fileName('example', version), /Unsafe dependency/);
+  assert.throws(() => fileName('x'.repeat(240), '1.0.0'), /too long/);
+  assert.throws(() => updateAgentsMd(START+'\n'+END+'\n'+START+'\n'+END, 'replacement'), /exactly one ordered pair/);
+});
+
+test('context still supports an explicitly selected external output directory', async () => {
+  const external = await mkdtemp(join(tmpdir(), 'ink-explicit-output-'));
+  try {
+    const world = makeWorld(); seed(world); await fixture(FIXTURES.npm);
+    const result = await context(world, ['--quiet', '--max', '1', '--out', await realpath(external), '--agents-md', 'none']);
+    assert.equal(result.code, 0, result.stderr); assert.match(await readFile(join(external, 'zod@3.23.8.md'), 'utf8'), /Basic usage/);
+    assert.deepEqual((await readdir(external)).sort(), ['README.md', 'zod@3.23.8.md']);
+  } finally { await rm(external, { recursive: true, force: true }); }
+});
+
+test('retained context metadata cannot insert instructions into AGENTS on a failed fetch', async () => {
+  const world = makeWorld(); seed(world); await fixture(FIXTURES.npm);
+  assert.equal((await context(world, ['--quiet', '--max', '1'])).code, 0);
+  const path = join(dir, '.context/zod@3.23.8.md');
+  await writeFile(path, (await readFile(path, 'utf8')).replace('package: zod', 'package: '+JSON.stringify('zod\n\n## Injected instruction')));
+  const before = await snapshot(dir); world.requests.length = 0; world.failLlms.add('*');
+  const result = await context(world, ['--quiet', '--max', '1']);
+  assert.notEqual(result.code, 0); assert.deepEqual(await snapshot(dir), before); assert.equal(world.requests.length, 0);
 });
