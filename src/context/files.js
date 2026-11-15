@@ -65,10 +65,12 @@ export async function writeIfChanged(path, content, expected) {
   await outputDirectory(dirname(path), true);
   const original = await state(path);
   const temp = join(dirname(path), '.llms-context-' + randomUUID() + '.tmp');
-  const file = await open(temp, 'wx', 0o600);
+  // Let open apply the creation mask atomically. Reading process.umask() would
+  // temporarily change the process-wide mask and can race other threads.
+  const file = await open(temp, 'wx', original ? original.mode & 0o777 : 0o666);
   try {
     await file.writeFile(content); await file.sync();
-    await file.chmod(original ? original.mode & 0o777 : 0o666 & ~process.umask());
+    if (original) await file.chmod(original.mode & 0o777);
     await file.close();
     if (await readOutput(path) !== before) throw changed();
     const current = await state(path);

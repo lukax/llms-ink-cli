@@ -135,7 +135,7 @@ only when every read failed. Packages are ranked by how many files import them, 
 uses most. Each package read is one link toward the daily limit; dependency names go to the public registries and
 GitHub, never your code, and `LLMS_INK_KEY` goes only to llms.ink.
 
-Context output validation (0.7.1+) refuses linked files/directories, hard-linked output files, unsafe lockfile versions, overlapping destinations and duplicate/incomplete AGENTS markers before fetching. Existing package filenames need the command's generator metadata; an existing output README must be its generated index. Files outside those managed names are preserved. Each output is limited to 8 MiB.
+Context output validation (0.7.2+) refuses linked files/directories, hard-linked output files, unsafe lockfile versions, overlapping destinations and duplicate/incomplete AGENTS markers before fetching. Existing package filenames need the command's generator metadata; an existing output README must be its generated index. Files outside those managed names are preserved. Each output is limited to 8 MiB.
 
 Output files are checked again after fetching and replaced individually through temporary files. Validation failures before publication leave the pack unchanged. Changes detected during publication, filesystem errors or interruption may leave some files updated. Review and rerun after resolving it. This is not a pack-wide transaction or isolation from another process replacing parent directories under your account. Use physical output paths without symlink components; the working directory itself is resolved once. Explicit external output directories remain supported. Context generation does not enable hosted inspection or certify the documents as safe.
 

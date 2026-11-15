@@ -6,7 +6,7 @@ import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { parseArgs } from 'node:util';
 
-export const VERSION = '0.7.1';
+export const VERSION = '0.7.2';
 const DEFAULT_API = 'https://llms.ink';
 
 const HELP = `llms-ink ${VERSION} — any link into llms.txt, for your AI
