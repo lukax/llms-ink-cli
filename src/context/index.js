@@ -32,7 +32,9 @@ Options
 
 Output paths must not contain symlinks; existing output files must not be hard-linked.
 Writes replace individual files atomically. Do not modify output directories during a run.
-Each package fetched counts as a link toward llms.ink's daily limit (cached links are free).`;
+Each package fetched counts as a link toward llms.ink's daily limit (cached links are free).
+Generation does not inspect content. See context inspect --help for explicit pack
+inspection and context verify --help for offline manifest verification.`;
 
 const ORDER = { npm: 0, pypi: 1, crates: 2, go: 3 };
 const posix = (p) => p.split(sep).join('/');

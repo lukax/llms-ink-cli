@@ -2,7 +2,7 @@
 import { main } from '../src/cli.js';
 
 // Allow inspection to cancel its request and remove a temporary receipt on interruption.
-if (process.argv[2] === 'inspect') {
+if (process.argv[2] === 'inspect' || (process.argv[2] === 'context' && process.argv[3] === 'inspect')) {
   const controller = new AbortController();
   const abort = () => controller.abort();
   process.once('SIGINT', abort); process.once('SIGTERM', abort);

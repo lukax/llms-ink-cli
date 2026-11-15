@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.0 — 2026-11-15
+
+- Add explicit `context inspect --dir --dry-run` previews and hosted whole-pack inspection with private, exclusive manifests. Record exact file bytes/digests, declared sources, validated receipts and partial failures; never upload during generation.
+- Add offline `context verify --dir --receipt`: reject changed file sets, changed bytes, unsupported receipts and incomplete runs. Records remain unsigned and cannot grant tool authority or establish content safety.
+- Bound the complete selected tree before uploads; refuse links and unsupported files. Pace requests without retries and preserve interrupted results on SIGINT/SIGTERM.
+
 ## 0.7.2 — 2026-11-15
 
 - Validate context output paths, locked versions and AGENTS merge markers before fetching or writing. Refuse symlinks, hard links, unmanaged destination collisions and overlapping output paths.

@@ -31,7 +31,7 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 24
-      - run: node --test test/context.test.js
+      - run: node --test test/context.test.js test/context-inspection.test.js
 
   publish:
     needs: [test, context-windows]

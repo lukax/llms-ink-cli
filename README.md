@@ -139,6 +139,23 @@ Context output validation (0.7.2+) refuses linked files/directories, hard-linked
 
 Output files are checked again after fetching and replaced individually through temporary files. Validation failures before publication leave the pack unchanged. Changes detected during publication, filesystem errors or interruption may leave some files updated. Review and rerun after resolving it. This is not a pack-wide transaction or isolation from another process replacing parent directories under your account. Use physical output paths without symlink components; the working directory itself is resolved once. Explicit external output directories remain supported. Context generation does not enable hosted inspection or certify the documents as safe.
 
+## Inspect a context pack (0.8.0)
+
+```sh
+llms-ink context inspect --dir .context --dry-run
+# Set LLMS_INK_INSPECT_KEY before the explicit upload:
+llms-ink context inspect --dir .context --output context-inspection.json
+llms-ink context verify --dir .context --receipt context-inspection.json
+```
+
+Preview lists every file, digest and declared source without requests or credentials. Inspection uploads every UTF-8 `.md`, `.txt` and `.json` file under the selected directory, including nested files and local notes. Unsupported files, symlinks and hard links fail preflight. JSON is sent as exact text. AGENTS.md outside the directory is not covered. Generation never enables inspection implicitly.
+
+The new private output records metadata, validated receipts, failures and unattempted files. It never overwrites an existing file. Filenames and source URLs can still be sensitive. Limit: 64 files, 128 KiB per encoded request and 8 MiB total; the service separately limits each file to 8,192 tokens. Requests wait seven seconds between files and never retry automatically. Transport errors, rate limits, unavailable service or cancellation stop new uploads while preserving partial results. Smaller generated packs can use `--max 5 --tokens 1500`.
+
+Verification is offline and checks the entire file set, exact bytes and supported receipt revisions. Added, removed, renamed or changed files invalidate results. Exit 0 requires current files with complete no-finding results for every file; any nonzero exit must stop delivery. Changed packs need a new explicitly requested scan and a new output path.
+
+The manifest is **unsigned**: someone who can edit it can forge a result. Trust the producer and protect the manifest; do not accept receipts from untrusted pull requests as attestations. Source metadata is declared, not independently verified. Local byte freshness does not establish upstream freshness, detector accuracy or safe tool authority, and verification does not lock files through later consumption. [Workflow, limits and GitHub Actions example](https://llms.ink/inspect/context/).
+
 ## Limits
 
 Public links only. 60 new links a day per person; cached links (24 h) are free. A free API key raises that to 1000 a

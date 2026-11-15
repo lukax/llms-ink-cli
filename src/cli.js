@@ -6,7 +6,7 @@ import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { parseArgs } from 'node:util';
 
-export const VERSION = '0.7.2';
+export const VERSION = '0.8.0';
 const DEFAULT_API = 'https://llms.ink';
 
 const HELP = `llms-ink ${VERSION} — any link into llms.txt, for your AI
@@ -23,6 +23,8 @@ Usage
   llms-ink notion <link> --parent <page> save llms.txt (llms-full.txt with --full) as a Notion page; prints its URL
   llms-ink inspect --file <path>        hosted text inspection; enabled key required (inspect --help)
   llms-ink context [--manifest <f>]...   write version-pinned docs for your dependencies to .context/ (context --help)
+  llms-ink context inspect --help      preview/upload a pack and record inspection scope
+  llms-ink context verify --help       verify pack bytes and receipt revisions offline
 
 Options
       --full          llms-full.txt instead of llms.txt
@@ -449,6 +451,10 @@ export async function main(io = {}) {
       return await cmdInspect(argv.slice(1), { env, stdout, stderr, cwd: io.cwd ?? process.cwd(), fetch: io.fetch ?? fetch, signal: io.signal });
     }
     if (argv[0] === 'context') {
+      if (['inspect', 'verify'].includes(argv[1])) {
+        const { cmdContextInspection } = await import('./context/inspection.js');
+        return await cmdContextInspection(argv[1], argv.slice(2), { env, stdout, stderr, cwd: io.cwd ?? process.cwd(), fetch: io.fetch ?? fetch, signal: io.signal, sleep: io.sleep });
+      }
       const { cmdContext } = await import('./context/index.js');
       return await cmdContext(argv.slice(1), { env, stdout, stderr, cwd: io.cwd ?? process.cwd(), fetch: io.fetch ?? fetch, client, reporter });
     }
