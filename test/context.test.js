@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile, symlink, link } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, sep } from 'node:path';
 import { Writable } from 'node:stream';
 import { main } from '../src/cli.js';
 import { cargoLockVersions, lockPackages, npmLockVersions, pnpmLockVersions, resolveVersions, yarnLockVersions } from '../src/context/lockfiles.js';
@@ -156,7 +156,7 @@ async function snapshot(root) {
     for (const e of await readdir(d, { withFileTypes: true })) {
       if (e.name === 'node_modules') continue;
       if (e.isDirectory()) await walk(join(d, e.name));
-      else out[join(d, e.name).slice(root.length + 1)] = await readFile(join(d, e.name), 'utf8');
+      else out[join(d, e.name).slice(root.length + 1).split(sep).join('/')] = await readFile(join(d, e.name), 'utf8');
     }
   };
   await walk(root);
