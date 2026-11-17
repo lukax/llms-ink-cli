@@ -6,7 +6,7 @@ import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { parseArgs } from 'node:util';
 
-export const VERSION = '0.9.0';
+export const VERSION = '0.9.1';
 export const DEFAULT_API = 'https://llms.ink';
 /** Names the CLI to the API, so its requests count as the `cli` source (worker/events.ts). */
 export const USER_AGENT = `llms-ink-cli/${VERSION}`;

@@ -55,6 +55,7 @@ test('init writes the GitHub workflow and uses public/ when present', async (t) 
   assert.match(text, /path: public\/llms\.txt/);
   assert.match(text, /full-path: public\/llms-full\.txt/);
   assert.match(text, /branch: trunk/);
+  assert.match(text, /env:\n\s+LLMS_INK_SOURCE: init/, 'Action runs from this workflow are attributable to the install');
   assert.match(result.stdout, /Wrote .*llms-txt\.yml/);
 });
 

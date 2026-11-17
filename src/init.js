@@ -35,6 +35,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: lukax/llms-txt-action@v1
+        # Lets llms.ink count this workflow's runs as coming from an install. Remove it to opt out.
+        env:
+          LLMS_INK_SOURCE: init
         with:
           url: ${url}
           path: ${path}

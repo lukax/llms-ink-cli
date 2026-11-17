@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.1 — 2026-11-17
+
+- The workflow `init` writes sets `LLMS_INK_SOURCE: init` on the Action step, so llms.ink can count runs from an install (Action 1.5.1+). Remove the line to opt out.
+
 ## 0.9.0 — 2026-11-17
 
 - Add `init`: write a reviewed GitHub workflow (`--github --url`, the default) that runs `lukax/llms-txt-action@v1` in PR mode after a production deployment, or the hosted MCP server in `.mcp.json` (`--mcp`). It shows each file as a diff, `--dry-run` writes nothing, and a differing file is never replaced without `--force`.
