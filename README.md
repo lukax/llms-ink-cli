@@ -27,6 +27,7 @@ Quote links that contain `?` or `&` (zsh and bash treat them specially).
 | `llms-ink generate <kind> <link>` | Drafts for you to review, built only from the source. `agents-md`: an AGENTS.md for a GitHub repo or docs site, each line ending with its source file and line. `jsonld`: a JSON-LD array (WebSite, Organization, Product, SoftwareApplication) of facts found on the site. `alt-text`: `alt="…"` for images without it. `answers`: a question heading and answer-first sentence per H2 section. Notes (what was found or rejected) go to stderr. Counts as a new link |
 | `llms-ink notion <link> --parent <page>` | Saves llms.txt (llms-full.txt with `--full`) as a new Notion page under the parent page and prints the page's URL. Needs a Notion connection token in `NOTION_TOKEN`. [Details](#save-to-notion-notion) |
 | `llms-ink context` | Writes version-pinned docs for your dependencies, trimmed to the APIs your code imports, to `.context/` and links them from AGENTS.md. [Details](#docs-for-your-dependencies-context) |
+| `llms-ink init` | Adds a GitHub Action or the hosted MCP config. `--dry-run` shows the files without writing; `--force` replaces a conflicting file. [Details](#initialize-a-repository-init) |
 
 ## Options
 
@@ -63,6 +64,9 @@ llms-ink check public/llms.txt --base https://example.com/llms.txt --links   # i
 llms-ink report example.com/pricing --json | jq -r 'first(.sections[].checks[] | select(.fix.patch.file? == "/robots.txt") | .fix.patch.content)' > robots.txt.new
 llms-ink generate agents-md github.com/you/repo -o AGENTS.md   # then review: every line ends with <!-- file:line -->
 llms-ink generate jsonld example.com > jsonld.json
+llms-ink init --url example.com --dry-run   # review the GitHub workflow first
+llms-ink init --url example.com             # write it
+llms-ink init --mcp                         # add the hosted MCP server to .mcp.json
 llms-ink notion docs.stripe.com/payments --full --parent https://www.notion.so/Research-1a2b3c4d5e6f47a8b9c0d1e2f3a4b5c6
 cat llms.txt | llms-ink parse - --json | jq '.sections[].links[].url'
 ```
@@ -74,6 +78,23 @@ path (`./…`, `/…`, `~/…`, or a folder path ending in `.txt`/`.md` such as 
 Progress and a one-line summary (kind · source · tokens · links) go to stderr; stdout gets only the file, so it pipes
 cleanly. `check`, `parse` and `report` print their report on stdout. Exit codes: `0` done, `1` failed (the reason is printed),
 `check` found errors or broken links, `parse` found nothing to parse, or `report` found a `fail`, `2` wrong usage.
+
+## Initialize a repository (`init`)
+
+```sh
+llms-ink init --url example.com --dry-run   # print the workflow and write nothing
+llms-ink init --url example.com             # write .github/workflows/llms-txt.yml
+llms-ink init --mcp                         # write .mcp.json with the hosted server
+```
+
+The GitHub workflow runs the existing `lukax/llms-txt-action@v1` after a production deployment and opens one update
+PR. It writes `public/llms.txt` when `public/` exists, `static/llms.txt` when `static/` exists, else `llms.txt` at the
+repository root. Review and adjust the branch or paths before enabling it. `--dry-run` never writes; an existing file
+that differs is left alone unless `--force` is passed.
+
+After writing, `init` sends llms.ink one anonymous count of the surfaces it wrote (`github`, `mcp`), with no site,
+repository or path. `--dry-run` sends nothing; set `DO_NOT_TRACK=1` to skip it. The MCP URL it writes ends in
+`?source=init` so calls from it are counted as coming from an install.
 
 ## Save to Notion (`notion`)
 

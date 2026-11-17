@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.0 — 2026-11-17
+
+- Add `init`: write a reviewed GitHub workflow (`--github --url`, the default) that runs `lukax/llms-txt-action@v1` in PR mode after a production deployment, or the hosted MCP server in `.mcp.json` (`--mcp`). It shows each file as a diff, `--dry-run` writes nothing, and a differing file is never replaced without `--force`.
+- After writing, `init` sends one anonymous count of the surfaces it wrote (`github`, `mcp`); no site, repository or path. `--dry-run` sends nothing; `DO_NOT_TRACK=1` skips it. The written MCP URL carries `?source=init`.
+- API requests send `User-Agent: llms-ink-cli/<version>`.
+
 ## 0.8.0 — 2026-11-15
 
 - Add explicit `context inspect --dir --dry-run` previews and hosted whole-pack inspection with private, exclusive manifests. Record exact file bytes/digests, declared sources, validated receipts and partial failures; never upload during generation.

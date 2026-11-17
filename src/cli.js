@@ -6,8 +6,10 @@ import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { parseArgs } from 'node:util';
 
-export const VERSION = '0.8.0';
-const DEFAULT_API = 'https://llms.ink';
+export const VERSION = '0.9.0';
+export const DEFAULT_API = 'https://llms.ink';
+/** Names the CLI to the API, so its requests count as the `cli` source (worker/events.ts). */
+export const USER_AGENT = `llms-ink-cli/${VERSION}`;
 
 const HELP = `llms-ink ${VERSION} — any link into llms.txt, for your AI
 
@@ -25,6 +27,7 @@ Usage
   llms-ink context [--manifest <f>]...   write version-pinned docs for your dependencies to .context/ (context --help)
   llms-ink context inspect --help      preview/upload a pack and record inspection scope
   llms-ink context verify --help       verify pack bytes and receipt revisions offline
+  llms-ink init [options]              add a GitHub Action or MCP config (init --help)
 
 Options
       --full          llms-full.txt instead of llms.txt
@@ -59,6 +62,7 @@ Examples
   llms-ink generate agents-md github.com/honojs/hono -o AGENTS.md   every line cites its source; review before committing
   llms-ink notion docs.stripe.com/payments --full --parent https://www.notion.so/Research-1a2b3c4d5e6f47a8b9c0d1e2f3a4b5c6
   llms-ink context --max 5               docs for the 5 most imported dependencies, AGENTS.md block included
+  llms-ink init --url example.com        add a GitHub Action that keeps llms.txt current (--dry-run to review)
 
 Public links only. 60 new links a day per person; cached links are free.
 A free API key raises that to 1000 a day: ask at https://llms.ink/about/#limits`;
@@ -117,7 +121,7 @@ function reporter(stderr, quiet) {
 /** `key`: optional API key, sent as `Authorization: Bearer`. */
 function client(api, key, fetchImpl) {
   const base = api.replace(/\/+$/, '');
-  const headers = { accept: 'application/json, */*', ...(key && { authorization: `Bearer ${key}` }) };
+  const headers = { accept: 'application/json, */*', 'user-agent': USER_AGENT, ...(key && { authorization: `Bearer ${key}` }) };
   async function call(path, init = {}) {
     let res;
     try {
@@ -446,6 +450,10 @@ export async function main(io = {}) {
   const stderr = io.stderr ?? process.stderr;
   const out = (text) => stdout.write(`${text}\n`);
   try {
+    if (argv[0] === 'init') {
+      const { cmdInit } = await import('./init.js');
+      return await cmdInit(argv.slice(1), { cwd: io.cwd ?? process.cwd(), env, stdout, stderr, fetch: io.fetch ?? fetch });
+    }
     if (argv[0] === 'inspect') {
       const { cmdInspect } = await import('./inspect.js');
       return await cmdInspect(argv.slice(1), { env, stdout, stderr, cwd: io.cwd ?? process.cwd(), fetch: io.fetch ?? fetch, signal: io.signal });
