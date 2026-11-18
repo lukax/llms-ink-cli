@@ -6,7 +6,7 @@ import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { parseArgs } from 'node:util';
 
-export const VERSION = '0.9.1';
+export const VERSION = '0.10.0';
 export const DEFAULT_API = 'https://llms.ink';
 /** Names the CLI to the API, so its requests count as the `cli` source (worker/events.ts). */
 export const USER_AGENT = `llms-ink-cli/${VERSION}`;
@@ -33,6 +33,7 @@ Options
       --full          llms-full.txt instead of llms.txt
       --fresh         rebuild instead of using the 24 h cache (counts as a new link); also for generate
       --generated     always generate; never the site's own llms.txt (for a site whose llms.txt comes from llms.ink)
+      --crawl <n>     channel or profile: how many of its newest items to open and describe [site's default]
   -o, --output <p>    file or folder to save to; - for stdout
   -t, --time <t>      frame: when, as 90, 1:30 or 1:02:03                [0]
   -w, --width <px>    frame: maximum width, 160–1920                    [1280]
@@ -55,6 +56,7 @@ Examples
   llms-ink 'https://youtube.com/watch?v=zjkBMFhNj_g' --full | pbcopy
   llms-ink frame 'https://youtu.be/jNQXAC9IVRw' -t 0:12 -o zoo.jpg
   llms-ink example.com --generated -o public/llms.txt
+  llms-ink youtube.com/@AndrejKarpathy --crawl 10   the newest 10 videos' captions instead of 5
   llms-ink check example.com             exits 1 on errors or broken links
   llms-ink check public/llms.txt --base https://example.com/llms.txt --links
   llms-ink parse llmstxt.org --json
@@ -191,11 +193,12 @@ async function save(res, dest, progress, stdout) {
   return got;
 }
 
-/** /api/v0/llms's answer for `url` (--full, --fresh and --generated apply), showing the seconds while the server works. */
+/** /api/v0/llms's answer for `url` (--full, --fresh, --generated and --crawl apply), showing the seconds while the server works. */
 async function readLlms(api, url, values, ctx) {
   const params = new URLSearchParams({ url, mode: values.full ? 'full' : 'llms' });
   if (values.fresh) params.set('fresh', '1');
   if (values.generated) params.set('native', '0');
+  if (values.crawl !== undefined) params.set('crawl', values.crawl);
   const stop = ticking(ctx.progress, `Inking ${url}${values.full ? ' (full)' : ''}`);
   let result;
   try {
@@ -474,7 +477,7 @@ export async function main(io = {}) {
         options: {
           full: { type: 'boolean' }, fresh: { type: 'boolean' }, output: { type: 'string', short: 'o' },
           time: { type: 'string', short: 't' }, width: { type: 'string', short: 'w' }, audio: { type: 'boolean' },
-          json: { type: 'boolean' }, quiet: { type: 'boolean' }, api: { type: 'string' }, key: { type: 'string' }, generated: { type: 'boolean' },
+          json: { type: 'boolean' }, quiet: { type: 'boolean' }, api: { type: 'string' }, key: { type: 'string' }, generated: { type: 'boolean' }, crawl: { type: 'string' },
           base: { type: 'string' }, links: { type: 'boolean' }, parent: { type: 'string' }, title: { type: 'string' }, token: { type: 'string' },
           help: { type: 'boolean', short: 'h' }, version: { type: 'boolean', short: 'v' },
         },
@@ -497,7 +500,9 @@ export async function main(io = {}) {
     if (!url) throw new CliError(what ? `Give ${what}` : `Give a link: llms-ink ${command === 'llms' ? '' : `${command} `}<link>`, 2);
     if (rest.length) throw new CliError(`One link at a time (got “${rest[0]}” too).`, 2);
     const reads = command === 'check' || command === 'parse' || command === 'report';
-    if (command !== 'llms' && command !== 'notion' && (values.full || (values.fresh && command !== 'generate') || values.generated)) throw new CliError(`--full, --fresh and --generated are for llms.txt, not ${command}.`, 2);
+    if (command !== 'llms' && command !== 'notion' && (values.full || (values.fresh && command !== 'generate') || values.generated || values.crawl !== undefined)) throw new CliError(`--full, --fresh, --generated and --crawl are for llms.txt, not ${command}.`, 2);
+    // The API checks the upper bound (the deepest a site allows).
+    if (values.crawl !== undefined && !/^\d+$/.test(values.crawl)) throw new CliError('--crawl: a whole number of items, like 10.', 2);
     if (command !== 'llms' && command !== 'generate' && !reads && values.json) throw new CliError(`--json is for llms.txt, check, parse, report and generate, not ${command}.`, 2);
     if (reads && values.output !== undefined) throw new CliError(`${command} prints its report; redirect it to save it.`, 2);
     if (command !== 'check' && command !== 'parse' && values.base !== undefined) throw new CliError('--base is for check and parse.', 2);

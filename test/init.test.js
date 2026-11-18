@@ -84,6 +84,50 @@ test('init --mcp writes a hosted MCP config without needing a URL', async (t) =>
   });
 });
 
+test('init --mcp merges into an existing .mcp.json and keeps other servers', async (t) => {
+  const dir = await repo();
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const other = { command: 'npx', args: ['other-mcp'] };
+  await writeFile(join(dir, '.mcp.json'), JSON.stringify({ mcpServers: { other } }));
+  const merged = await run(dir, ['--mcp']);
+  assert.equal(merged.code, 0, merged.stderr);
+  const config = JSON.parse(await readFile(join(dir, '.mcp.json'), 'utf8'));
+  assert.deepEqual(config.mcpServers, { other, 'llms-ink': { type: 'http', url: 'https://llms.ink/mcp?source=init' } });
+  assert.match((await run(dir, ['--mcp'])).stdout, /already configured/);
+
+  config.mcpServers['llms-ink'] = { type: 'http', url: 'https://example.com/mcp' };
+  await writeFile(join(dir, '.mcp.json'), JSON.stringify(config));
+  const conflict = await run(dir, ['--mcp']);
+  assert.equal(conflict.code, 2);
+  assert.match(conflict.stderr, /different llms-ink server/);
+  assert.equal((await run(dir, ['--mcp', '--force'])).code, 0);
+  const forced = JSON.parse(await readFile(join(dir, '.mcp.json'), 'utf8'));
+  assert.deepEqual(forced.mcpServers.other, other, '--force replaces only the llms-ink entry');
+  assert.equal(forced.mcpServers['llms-ink'].url, 'https://llms.ink/mcp?source=init');
+});
+
+test('init --mcp refuses an .mcp.json that is not valid JSON', async (t) => {
+  const dir = await repo();
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  await writeFile(join(dir, '.mcp.json'), '{ "mcpServers": ');
+  const broken = await run(dir, ['--mcp', '--force']);
+  assert.equal(broken.code, 2);
+  assert.match(broken.stderr, /not valid JSON/);
+  assert.equal(await readFile(join(dir, '.mcp.json'), 'utf8'), '{ "mcpServers": ');
+});
+
+test('init from a subdirectory writes at the repository root and says so', async (t) => {
+  const dir = await repo();
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const sub = join(dir, 'packages', 'web');
+  await mkdir(sub, { recursive: true });
+  const result = await run(sub, ['--url', 'https://example.com']);
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stdout, /repository root/);
+  assert.ok(await exists(join(dir, '.github/workflows/llms-txt.yml')));
+  assert.equal(await exists(join(sub, '.github')), false);
+});
+
 test('init counts only the surfaces it wrote, with no site or path', async (t) => {
   const dir = await repo();
   t.after(() => rm(dir, { recursive: true, force: true }));

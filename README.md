@@ -36,6 +36,7 @@ Quote links that contain `?` or `&` (zsh and bash treat them specially).
 | `--full` | llms-full.txt instead of llms.txt |
 | `--fresh` | Rebuild instead of using the 24-hour cache (counts as a new link); also for `generate` |
 | `--generated` | Always generate, never return the site's own llms.txt. Use it when your site's llms.txt comes from llms.ink |
+| `--crawl <n>` | A channel or profile (YouTube, GitHub, Instagram, TikTok, X): how many of its newest items to open and describe, 0–10 (default 4 or 5 by site). Another depth is cached apart and counts as more new links when built |
 | `-o, --output <path>` | A file, a folder (created when it ends in `/`), or `-` for stdout |
 | `-t, --time <t>` | `frame`: when — `90`, `1:30`, `1:02:03` |
 | `-w, --width <px>` | `frame`: maximum width, 160–1920 (default 1280) |

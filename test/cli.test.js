@@ -93,6 +93,9 @@ test('wrong usage exits 2 with a reason and makes no request', async () => {
     [['a.com', '--audio'], /for media/],
     [['frame', VIDEO, '-t', 'soon'], /--time/],
     [['frame', VIDEO, '-w', '5000'], /--width/],
+    [['media', VIDEO, '--crawl', '3'], /--full, --fresh, --generated and --crawl are for llms\.txt/],
+    [['youtube.com/@x', '--crawl', '2.5'], /--crawl: a whole number/],
+    [['youtube.com/@x', '--crawl', '-1'], /--crawl/],
   ]) {
     const result = await cli(argv);
     assert.equal(result.code, 2, argv.join(' '));
@@ -184,6 +187,14 @@ test('--generated asks for a generated file, never the site’s own (native=0)',
   const result = await cli(['llmstxt.org', '--generated', '--quiet']);
   assert.equal(result.code, 0, result.stderr);
   assert.deepEqual(mock.requests[0].query, { url: 'llmstxt.org', mode: 'llms', native: '0' });
+});
+
+test('--crawl asks for a channel’s or profile’s depth; without it none is sent', async () => {
+  const result = await cli(['youtube.com/@AndrejKarpathy', '--crawl', '10', '--full', '--quiet']);
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(mock.requests[0].query, { url: 'youtube.com/@AndrejKarpathy', mode: 'full', crawl: '10' });
+  await cli(['youtube.com/@AndrejKarpathy', '--quiet']);
+  assert.equal('crawl' in mock.requests[1].query, false);
 });
 
 test('check prints the report and exits 0 when clean, even with warnings', async () => {

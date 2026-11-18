@@ -11,12 +11,14 @@ Usage
 
 Options
       --github        add .github/workflows/llms-txt.yml (default when no target is given)
-      --mcp           add .mcp.json
+      --mcp           add the llms-ink server to .mcp.json (other servers are kept)
       --url <site>    the deployed site the Action reads
       --branch <b>    branch for the workflow                      [main]
       --dry-run       print the files and changes; write nothing
-      --force         replace an existing file that differs
+      --force         replace a differing workflow or llms-ink server entry
   -h, --help          this help
+
+Files go to the repository root, found from the current directory up.
 
 After writing, init sends llms.ink one anonymous count of the files it wrote (github, mcp): no site, repository or
 path. --dry-run sends nothing; set DO_NOT_TRACK=1 to skip it.`;
@@ -47,10 +49,39 @@ jobs:
 `;
 
 // `?source=init` lets llms.ink count calls from this config as coming from an install (worker/events.ts).
-const mcp = `${JSON.stringify({ mcpServers: { 'llms-ink': { type: 'http', url: 'https://llms.ink/mcp?source=init' } } }, null, 2)}\n`;
+const MCP_SERVER = { type: 'http', url: 'https://llms.ink/mcp?source=init' };
 
 const exists = (path) => stat(path).then(() => true, () => false);
 const isDirectory = (path) => stat(path).then((s) => s.isDirectory(), () => false);
+
+/** The nearest directory from `dir` up that holds `.git` (a directory, or a file in worktrees), or null. */
+async function gitRoot(dir) {
+  for (let at = dir; ; at = dirname(at)) {
+    if (await exists(join(at, '.git'))) return at;
+    if (dirname(at) === at) return null;
+  }
+}
+
+/**
+ * `.mcp.json` with the llms-ink server merged into `before` (other servers and keys kept). `conflict` is true when
+ * an llms-ink entry already exists and differs, which only --force replaces.
+ */
+function mergeMcp(path, before) {
+  if (before === null) return { content: `${JSON.stringify({ mcpServers: { 'llms-ink': MCP_SERVER } }, null, 2)}\n`, conflict: false };
+  let config;
+  try {
+    config = JSON.parse(before);
+  } catch (err) {
+    throw new CliError(`${path} is not valid JSON (${err.message}). Fix or remove it, then run init again.`, 2);
+  }
+  if (!config || typeof config !== 'object' || Array.isArray(config)) throw new CliError(`${path} is not a JSON object. Fix or remove it, then run init again.`, 2);
+  const servers = config.mcpServers ?? {};
+  if (!servers || typeof servers !== 'object' || Array.isArray(servers)) throw new CliError(`${path}: mcpServers is not an object. Fix it, then run init again.`, 2);
+  const current = servers['llms-ink'];
+  if (current !== undefined && JSON.stringify(current) === JSON.stringify(MCP_SERVER)) return { content: before, conflict: false };
+  const content = `${JSON.stringify({ ...config, mcpServers: { ...servers, 'llms-ink': MCP_SERVER } }, null, 2)}\n`;
+  return { content, conflict: current !== undefined };
+}
 
 /** A simple line diff: whole-file replacement, enough to review before init writes. */
 function diff(path, before, after) {
@@ -60,14 +91,12 @@ function diff(path, before, after) {
   return lines.join('\n');
 }
 
-/** Write one generated file, refusing to overwrite a different file without --force. */
-async function put(path, content, { dryRun, force, out }) {
-  const before = await readFile(path, 'utf8').catch(() => null);
+/** Write one generated file over `before` (its current text, or null). Conflicts are refused before this runs. */
+async function put(path, before, content, { dryRun, out }) {
   if (before === content) {
     out(`${path} is already configured.`);
     return false;
   }
-  if (before !== null && !force) throw new CliError(`${path} already exists and differs. Review it or pass --force.`, 2);
   out(diff(path, before, content));
   if (dryRun) {
     out(`Would write ${path}.`);
@@ -105,8 +134,9 @@ export async function cmdInit(argv, { cwd = process.cwd(), env = {}, stdout, std
   }
   const { values } = parsed;
   if (values.help) { stdout.write(`${HELP}\n`); return 0; }
-  const root = resolve(cwd);
-  if (!(await exists(join(root, '.git')))) throw new CliError('Run this inside a Git repository.', 2);
+  const root = await gitRoot(resolve(cwd));
+  if (!root) throw new CliError('Run this inside a Git repository.', 2);
+  if (root !== resolve(cwd)) out(`Writing to the repository root: ${root}`);
   const targets = values.github || values.mcp ? { github: !!values.github, mcp: !!values.mcp } : { github: true, mcp: false };
   if (targets.github && !values.url) throw new CliError('--url is required for the GitHub workflow: llms-ink init --url https://example.com', 2);
   let url;
@@ -121,17 +151,24 @@ export async function cmdInit(argv, { cwd = process.cwd(), env = {}, stdout, std
   if (!/^[A-Za-z0-9._/-]+$/.test(branch)) throw new CliError('--branch: use a branch name (letters, numbers, . _ / -).', 2);
   const output = await isDirectory(join(root, 'public')) ? 'public' : await isDirectory(join(root, 'static')) ? 'static' : '';
   const path = `${output ? `${output}/` : ''}llms.txt`;
+  const read = (file) => readFile(file, 'utf8').catch(() => null);
   const writes = [];
-  if (targets.github) writes.push(['github', join(root, '.github/workflows/llms-txt.yml'), action(url, branch, path)]);
-  if (targets.mcp) writes.push(['mcp', join(root, '.mcp.json'), mcp]);
-  // Refuse a conflicting file before writing anything, so a two-target run is not half applied.
-  for (const [, file, content] of writes) {
-    const before = await readFile(file, 'utf8').catch(() => null);
-    if (before !== null && before !== content && !values.force) throw new CliError(`${file} already exists and differs. Review it or pass --force.`, 2);
+  if (targets.github) {
+    const file = join(root, '.github/workflows/llms-txt.yml');
+    const before = await read(file);
+    const content = action(url, branch, path);
+    writes.push({ surface: 'github', file, before, content, conflict: before !== null && before !== content, why: 'already exists and differs' });
   }
+  if (targets.mcp) {
+    const file = join(root, '.mcp.json');
+    const before = await read(file);
+    writes.push({ surface: 'mcp', file, before, ...mergeMcp(file, before), why: 'already has a different llms-ink server' });
+  }
+  // Refuse a conflicting file before writing anything, so a two-target run is not half applied.
+  for (const w of writes) if (w.conflict && !values.force) throw new CliError(`${w.file} ${w.why}. Review it or pass --force.`, 2);
   const dryRun = !!values['dry-run'];
   const written = [];
-  for (const [surface, file, content] of writes) if (await put(file, content, { dryRun, force: !!values.force, out })) written.push(surface);
+  for (const w of writes) if (await put(w.file, w.before, w.content, { dryRun, out })) written.push(w.surface);
   if (dryRun) out('Dry run: no files written.');
   else if (!written.length) out('Nothing to write.');
   await countInstall(written, { env, fetch });

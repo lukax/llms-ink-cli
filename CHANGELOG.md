@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.0 — 2026-11-18
+
+- Add `--crawl <n>`: how many of a channel's or profile's newest items llms.ink opens and describes (the API's `crawl`, 0–10). A depth other than the site's default is cached apart and counts as ceil(n ÷ default) new links when built.
+- `init --mcp` merges the `llms-ink` server into an existing `.mcp.json` and keeps the other servers. `--force` is needed only when a different `llms-ink` entry exists; an `.mcp.json` that isn't valid JSON is refused.
+- `init` finds the repository root from the current directory up and writes there, so it works from a subdirectory.
+
 ## 0.9.1 — 2026-11-17
 
 - The workflow `init` writes sets `LLMS_INK_SOURCE: init` on the Action step, so llms.ink can count runs from an install (Action 1.5.1+). Remove the line to opt out.
