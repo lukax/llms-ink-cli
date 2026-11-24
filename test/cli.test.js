@@ -65,7 +65,7 @@ test('wrong usage exits 2 with a reason and makes no request', async () => {
     [['a.com', 'b.com'], /One link at a time/],
     [['frame', VIDEO, '--full'], /are for llms\.txt/],
     [['media', VIDEO, '--generated'], /are for llms\.txt/],
-    [['media', VIDEO, '--json'], /--json is for llms\.txt, check, parse, report and generate/],
+    [['media', VIDEO, '--json'], /--json is for llms\.txt, check, parse, report, generate and listen/],
     [['generate'], /Give a kind and a link: llms-ink generate <agents-md\|jsonld\|alt-text\|answers> <link>/],
     [['generate', 'agents-md'], /Give a kind and a link/],
     [['generate', 'poem', 'llmstxt.org'], /Unknown kind “poem”: use agents-md, jsonld, alt-text, answers/],
@@ -115,7 +115,7 @@ test('a link prints its llms.txt on stdout, and a summary on stderr', async () =
 test('--full and --fresh ask for llms-full.txt and a rebuild', async () => {
   const result = await cli(['llmstxt.org', '--full', '--fresh']);
   assert.equal(result.stdout, FULL);
-  assert.deepEqual(mock.requests[0].query, { url: 'llmstxt.org', mode: 'full', fresh: '1' });
+  assert.deepEqual(mock.requests[0].query, { url: 'llmstxt.org', mode: 'full', fresh: 'true' });
   assert.match(result.stderr, /1,234 tokens · 3 pages/);
   assert.doesNotMatch(result.stderr, /cached/);
 });
@@ -183,10 +183,10 @@ test('an API key from --key or LLMS_INK_KEY goes in Authorization; none is sent 
   assert.match(bad.stderr, /isn’t valid or was revoked/);
 });
 
-test('--generated asks for a generated file, never the site’s own (native=0)', async () => {
+test('--generated asks for a generated file, never the site’s own (native=false)', async () => {
   const result = await cli(['llmstxt.org', '--generated', '--quiet']);
   assert.equal(result.code, 0, result.stderr);
-  assert.deepEqual(mock.requests[0].query, { url: 'llmstxt.org', mode: 'llms', native: '0' });
+  assert.deepEqual(mock.requests[0].query, { url: 'llmstxt.org', mode: 'llms', native: 'false' });
 });
 
 test('--crawl asks for a channel’s or profile’s depth; without it none is sent', async () => {
@@ -238,7 +238,7 @@ test('check a file with --base and --links: the report is headed by the base URL
   await writeFile(join(dir, 'llms.txt'), LOCAL);
   const result = await cli(['check', 'llms.txt', '--base', BASE, '--links', '--key', KEY]);
   assert.equal(result.code, 1);
-  assert.deepEqual(mock.requests[0].query, { base: BASE, links: '1' });
+  assert.deepEqual(mock.requests[0].query, { base: BASE, links: 'true' });
   assert.equal(mock.requests[0].authorization, `Bearer ${KEY}`);
   assert.match(result.stdout, /^https:\/\/example\.com\/llms\.txt: 1 error, 0 warnings · 2 sections · 3 links \(3 checked, 1 broken\)[^\n]* · llms-full\.txt not found\n/);
   assert.match(result.stdout, /- error \(line 10\): https:\/\/example\.com\/gone\.md answers HTTP 404\./);
@@ -360,7 +360,7 @@ test('generate prints usable drafts per kind, notes on stderr; -o saves; --json 
   const jsonld = await cli(['generate', 'jsonld', 'widget.dev', '--fresh', '--quiet']);
   assert.deepEqual(JSON.parse(jsonld.stdout).map((o) => o['@type']), ['WebSite', 'Organization'], 'one JSON-LD array, ready for a script tag');
   assert.equal(jsonld.stderr, '');
-  assert.equal(mock.requests.at(-1).query.fresh, '1');
+  assert.equal(mock.requests.at(-1).query.fresh, 'true');
   assert.equal((await cli(['generate', 'alt-text', 'widget.dev/gallery', '--quiet'])).stdout, '/chart.png\n  alt="Bar chart of &quot;sales&quot; by quarter"\n');
   assert.equal((await cli(['generate', 'answers', 'widget.dev/guide', '--quiet'])).stdout, '<!-- was: ## Installation -->\n## How do you install Widget?\n\nRun `npm i widget`.\n');
 

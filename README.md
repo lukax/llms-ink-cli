@@ -1,7 +1,7 @@
 # llms-ink
 
 Turn any link — a website, docs section, page, GitHub repo, PDF or video — into [llms.txt](https://llmstxt.org) and
-llms-full.txt your model can read. The command line for [llms.ink](https://llms.ink). No account, no key needed.
+llms-full.txt your model can read. The command line for [llms.ink](https://llms.ink). Works without an account or a key.
 
 ```sh
 npx @lukax/llms-ink developers.cloudflare.com/kv/
@@ -180,8 +180,8 @@ The manifest is **unsigned**: someone who can edit it can forge a result. Trust 
 
 ## Limits
 
-Public links only. 60 new links a day per person; cached links (24 h) are free. A free API key raises that to 1000 a
-day: ask for one on [llms.ink/about](https://llms.ink/about/#limits). More at [llms.ink/docs](https://llms.ink/docs/),
+Public links only. 60 new links a day per person; cached links (24 h) don't count. An account's API key raises that
+to 300 a day, and Pro to 1,000: [llms.ink/pricing](https://llms.ink/pricing/). More at [llms.ink/docs](https://llms.ink/docs/),
 including the MCP server.
 
 ## Hosted inspection (experimental, 0.6.0)

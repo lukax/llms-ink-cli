@@ -27,6 +27,20 @@ export function parseLlms(text, base) {
   return parsed.title || parsed.sections.length ? parsed : null;
 }
 
+/** One live session as /live/watch sends it: an earlier line and section (context), then news, then the end. */
+export const LIVE_EVENTS = (startedAt) => [
+  { type: 'state', seq: 4, status: 'watching', detail: '', live: true, signedIn: true, endsAt: null, transcript: { url: 'https://www.twitch.tv/somechannel', platform: 'twitch', title: 'Dev stream', uploader: 'somechannel', startedAt, updatedAt: startedAt, segments: [{ start: 0, end: 7, text: 'Welcome back everyone.' }], summary: 'Intro.', now: 'Saying hello', sections: { [Date.parse(startedAt)]: { title: 'Hello', gist: 'Greetings.' } } } },
+  { type: 'ping', seq: 4 },
+  { type: 'segments', seq: 5, segments: [{ start: 0, end: 7, text: 'Welcome back everyone.' }, { start: 7, end: 14, text: 'Today we talk pricing.' }] },
+  { type: 'summary', seq: 6, summary: 'Pric', now: 'Pri', done: false },
+  { type: 'summary', seq: 7, summary: 'They discuss pricing.', now: 'Talking pricing', done: true, at: '2026-11-24T12:00:20.000Z' },
+  { type: 'segments', seq: 8, segments: [{ start: 14, end: 21, text: 'The release date is Friday.' }] },
+  { type: 'chat', seq: 9, messages: [{ at: 1, user: 'a', text: 'hi' }], count: 1 },
+  { type: 'chatThinks', seq: 10, thinks: { mood: 'excited', themes: [{ title: 'Release', share: 60, quote: 'finally' }], at: '2026-11-24T12:00:30.000Z', messages: 10 } },
+  { type: 'sections', seq: 11, sections: { [Date.parse(startedAt)]: { title: 'Hello', gist: 'Greetings.' }, [Date.parse(startedAt) + 300000]: { title: 'Launch plans', gist: 'Ships Friday.' } } },
+  { type: 'status', seq: 12, status: 'ended', detail: 'The session ended.' },
+];
+
 export async function startMock() {
   const requests = [];
   const server = createServer(async (req, res) => {
@@ -43,7 +57,7 @@ export async function startMock() {
       if (status >= 400) {
         const code = { 401: 'invalid_key', 404: 'not_found', 413: 'too_large', 415: 'unsupported_media_type', 422: 'unprocessable', 429: 'quota_exceeded', 500: 'internal' }[status] ?? 'invalid_request';
         res.writeHead(status, { 'content-type': 'application/problem+json' });
-        return res.end(JSON.stringify({ type: 'https://example.test/docs/#errors', title: 'Error', status, code, detail: value.error }));
+        return res.end(JSON.stringify({ type: `https://example.test/docs/#error-${code}`, title: 'Error', status, code, detail: value.error }));
       }
       res.writeHead(status, { 'content-type': 'application/json' });
       res.end(JSON.stringify(value));
@@ -52,18 +66,28 @@ export async function startMock() {
     if (req.headers.authorization && req.headers.authorization !== `Bearer ${KEY}`) return json(401, { error: 'That API key isn’t valid or was revoked.' });
     if (link.includes('private')) return json(422, { error: 'That page needs a login; llms.ink only reads public pages.' });
     if (link.includes('limit')) return json(429, { error: 'Daily limit reached (60 new links). Cached links still work.' });
+    // Live: a scripted session. `live=offline` is offline; without a key and `start=true`, nothing is running.
+    if (url.pathname === '/api/v0/live/watch') {
+      res.writeHead(200, { 'content-type': 'application/x-ndjson' });
+      const send = (e) => res.write(`${JSON.stringify(e)}\n`);
+      if (link.includes('offline')) { send({ type: 'state', seq: 0, status: 'offline', detail: 'The stream is offline.', live: false, signedIn: false, endsAt: null, transcript: null }); return res.end(); }
+      if (!req.headers.authorization) { send({ type: 'state', seq: 0, status: 'idle', detail: '', live: true, signedIn: false, endsAt: null, transcript: null }); return res.end(); }
+      const startedAt = '2026-11-24T12:00:00.000Z';
+      for (const e of LIVE_EVENTS(startedAt)) send(e);
+      return res.end();
+    }
     if (url.pathname === '/api/v0/llms') {
       const full = url.searchParams.get('mode') === 'full';
       return json(200, { url: 'https://llmstxt.org/', kind: 'site', source: 'native', mode: full ? 'full' : 'llms', title: 'llms.txt', text: full ? FULL : LLMS, tokens: full ? 1234 : 52, pages: full ? 3 : 1, model: null, cached: !url.searchParams.has('fresh'), generatedAt: '2026-11-13T00:00:00.000Z' });
     }
     const summarize = (issues) => ({ errors: issues.filter((i) => i.level === 'error').length, warnings: issues.filter((i) => i.level === 'warning').length });
     if (url.pathname === '/api/v0/check' && req.method === 'POST') {
-      // The text is checked as sent; with links=1, a link with "gone" in it answers 404.
+      // The text is checked as sent; with links=true, a link with "gone" in it answers 404.
       if (!/^text\/(plain|markdown)\b/.test(req.headers['content-type'] ?? '')) return json(415, { error: 'Send the llms.txt as text/plain or text/markdown.' });
       if (!body.trim()) return json(400, { error: 'Send the llms.txt text in the body.' });
       const base = url.searchParams.get('base');
       if (base !== null && !/^https?:\/\/[^/]+/.test(base)) return json(400, { error: 'base: use a public http(s) URL.' });
-      const checkLinks = url.searchParams.get('links') === '1';
+      const checkLinks = url.searchParams.get('links') === 'true';
       const parsed = parseLlms(body, base);
       const all = parsed?.sections.flatMap((s) => s.links) ?? [];
       const broken = checkLinks ? all.filter((l) => l.url.includes('gone')).map((l) => ({ url: l.url, status: 404 })) : [];

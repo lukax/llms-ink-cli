@@ -5,8 +5,9 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { parseArgs } from 'node:util';
+import { listener, streamLines, textLine } from './listen.js';
 
-export const VERSION = '0.10.0';
+export const VERSION = '0.12.0';
 export const DEFAULT_API = 'https://llms.ink';
 /** Names the CLI to the API, so its requests count as the `cli` source (worker/events.ts). */
 export const USER_AGENT = `llms-ink-cli/${VERSION}`;
@@ -22,6 +23,7 @@ Usage
   llms-ink parse <file|-|link>           print an llms.txt's title, summary, sections and links
   llms-ink report <link>                 what AI crawlers and agents see on a page, with fixes; exits 1 on any fail
   llms-ink generate <kind> <link>        draft AGENTS.md (agents-md), JSON-LD (jsonld), alt text (alt-text) or answer-first headings (answers)
+  llms-ink listen <live link>            follow a live stream: one line per section, summary, chat mood or match
   llms-ink notion <link> --parent <page> save llms.txt (llms-full.txt with --full) as a Notion page; prints its URL
   llms-ink inspect --file <path>        hosted text inspection; enabled key required (inspect --help)
   llms-ink context [--manifest <f>]...   write version-pinned docs for your dependencies to .context/ (context --help)
@@ -38,7 +40,12 @@ Options
   -t, --time <t>      frame: when, as 90, 1:30 or 1:02:03                [0]
   -w, --width <px>    frame: maximum width, 160–1920                    [1280]
       --audio         media: the audio only (M4A)
-      --json          llms, check, parse, report, generate: the whole answer as JSON (parse: the parsed file)
+      --json          llms, check, parse, report, generate: the whole answer as JSON (parse: the parsed file);
+                      listen: one JSON object per line
+      --match <re>    listen: only events whose text matches (case-insensitive), plus status changes
+      --until <re>    listen: stop after the first match (exit 0); exit 1 if the stream ends first
+      --lines         listen: every transcript line too (about one every 7 s)
+      --keep          listen: start a new session when one ends (30 min each), until the stream goes offline
       --base <url>    check, parse a file or -: its public URL, to resolve relative links
       --links         check a file or -: also check its links (and llms-full.txt next to --base)
       --parent <p>    notion: the parent page, an ID or URL (shared with your Notion connection)
@@ -64,6 +71,7 @@ Examples
   llms-ink generate agents-md github.com/honojs/hono -o AGENTS.md   every line cites its source; review before committing
   llms-ink notion docs.stripe.com/payments --full --parent https://www.notion.so/Research-1a2b3c4d5e6f47a8b9c0d1e2f3a4b5c6
   llms-ink context --max 5               docs for the 5 most imported dependencies, AGENTS.md block included
+  llms-ink listen twitch.tv/somechannel --match 'release|launch' --json   wake an agent on what matters
   llms-ink init --url example.com        add a GitHub Action that keeps llms.txt current (--dry-run to review)
 
 Public links only. 60 new links a day per person; cached links are free.
@@ -137,7 +145,7 @@ function client(api, key, fetchImpl) {
     }
     return res;
   }
-  return { base, call };
+  return { base, call, hasKey: Boolean(key) };
 }
 
 /** Where to write `name`: -o file, -o folder (existing or ending in /), or the current folder. */
@@ -196,8 +204,8 @@ async function save(res, dest, progress, stdout) {
 /** /api/v0/llms's answer for `url` (--full, --fresh, --generated and --crawl apply), showing the seconds while the server works. */
 async function readLlms(api, url, values, ctx) {
   const params = new URLSearchParams({ url, mode: values.full ? 'full' : 'llms' });
-  if (values.fresh) params.set('fresh', '1');
-  if (values.generated) params.set('native', '0');
+  if (values.fresh) params.set('fresh', 'true');
+  if (values.generated) params.set('native', 'false');
   if (values.crawl !== undefined) params.set('crawl', values.crawl);
   const stop = ticking(ctx.progress, `Inking ${url}${values.full ? ' (full)' : ''}`);
   let result;
@@ -220,6 +228,70 @@ async function cmdLlms(api, url, values, ctx) {
   }
   ctx.progress.done('');
   await writeOut(result.text, values, fileNameFor(url, values.full), ctx, summary);
+}
+
+/** The pattern for --match or --until: case-insensitive; a bad one is a usage error. */
+function listenPattern(values) {
+  if (values.match !== undefined && values.until !== undefined) throw new CliError('Use --match or --until, not both (--until also matches).', 2);
+  const source = values.until ?? values.match;
+  if (source === undefined) return null;
+  if (!source.trim()) throw new CliError(`--${values.until !== undefined ? 'until' : 'match'}: give a word or a pattern, like 'release|launch'.`, 2);
+  try {
+    return new RegExp(source, 'i');
+  } catch (err) {
+    throw new CliError(`--${values.until !== undefined ? 'until' : 'match'}: ${err.message}`, 2);
+  }
+}
+
+/**
+ * Follows a live stream and prints one line per event (JSON with --json). With a key it starts a session when none is
+ * running; without one it follows a running one. Reconnects after a dropped connection; --keep starts a new session
+ * when one ends. Exits 0 when the stream or session ends (or --until matched), 1 on a failure, 2 on usage.
+ */
+async function cmdListen(api, url, values, ctx) {
+  const pattern = listenPattern(values);
+  if (values.keep && !api.hasKey) throw new CliError('--keep starts new sessions, which needs an API key: --key or LLMS_INK_KEY.', 2);
+  const watch = listener({ pattern, until: values.until !== undefined, lines: !!values.lines, signedIn: api.hasKey });
+  const print = (e) => ctx.out(values.json ? JSON.stringify(e) : textLine(e));
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  let drops = 0;
+  let announced = false;
+  for (;;) {
+    const params = new URLSearchParams({ url, start: String(api.hasKey) });
+    let stop = null;
+    let res;
+    try {
+      res = await api.call(`/api/v0/live/watch?${params}`, { headers: { accept: 'application/x-ndjson' }, signal: ctx.signal });
+      if (!res.body) throw new CliError('The live stream answered with nothing.');
+      for await (const line of streamLines(res.body)) {
+        let event;
+        try { event = JSON.parse(line); } catch { continue; }
+        const result = watch.take(event);
+        for (const e of result.out) {
+          if (e.event === 'status' && e.title && !announced) {
+            announced = true;
+            ctx.progress.done(`Listening to ${e.title}${values.until !== undefined ? ` until “${values.until}”` : ''}. Ctrl+C stops.`);
+          }
+          print(e);
+        }
+        if (watch.met(result.out)) return 0;
+        if (result.stop) { stop = result.stop; break; }
+        drops = 0;
+      }
+    } catch (err) {
+      if (err?.name === 'AbortError' || ctx.signal?.aborted) return 0;
+      // A refusal (bad link, bad key, rate limit) is final; a dropped connection is retried.
+      if (err instanceof CliError && res === undefined) throw err;
+    }
+    if (stop?.ended && values.keep) { await wait(1000); continue; }
+    if (stop?.ended) {
+      if (values.until !== undefined) throw new CliError(`The stream ended before “${values.until}” came up.`);
+      return 0;
+    }
+    if (stop) throw new CliError(stop.message, stop.code);
+    if (++drops > 5) throw new CliError('Lost the live stream connection five times in a row. Run listen again to resume.');
+    await wait(Math.min(30_000, 1000 * 2 ** drops));
+  }
 }
 
 /** Saves a link's llms.txt (llms-full.txt with --full) as a Notion page under --parent; prints the page URL. The token is never printed. */
@@ -284,7 +356,7 @@ async function fetchCheck(api, arg, values, ctx, verb) {
     const text = arg === '-' ? await readAll(ctx.stdin) : await readFile(resolve(ctx.cwd, arg), 'utf8');
     const params = new URLSearchParams();
     if (values.base !== undefined) params.set('base', values.base);
-    if (values.links) params.set('links', '1');
+    if (values.links) params.set('links', 'true');
     request = [`/api/v0/check${params.size ? `?${params}` : ''}`, { method: 'POST', headers: { 'content-type': 'text/plain; charset=utf-8' }, body: text }];
   } else {
     request = [`/api/v0/check?${new URLSearchParams({ url: arg })}`];
@@ -385,7 +457,7 @@ const KINDS = ['agents-md', 'jsonld', 'alt-text', 'answers'];
 async function cmdGenerate(api, kind, url, values, ctx) {
   if (!KINDS.includes(kind)) throw new CliError(`Unknown kind “${kind}”: use ${KINDS.join(', ')}.`, 2);
   const params = new URLSearchParams({ url, kind });
-  if (values.fresh) params.set('fresh', '1');
+  if (values.fresh) params.set('fresh', 'true');
   const stop = ticking(ctx.progress, `Drafting ${kind} for ${url}`);
   let r;
   try {
@@ -479,6 +551,7 @@ export async function main(io = {}) {
           time: { type: 'string', short: 't' }, width: { type: 'string', short: 'w' }, audio: { type: 'boolean' },
           json: { type: 'boolean' }, quiet: { type: 'boolean' }, api: { type: 'string' }, key: { type: 'string' }, generated: { type: 'boolean' }, crawl: { type: 'string' },
           base: { type: 'string' }, links: { type: 'boolean' }, parent: { type: 'string' }, title: { type: 'string' }, token: { type: 'string' },
+          match: { type: 'string' }, until: { type: 'string' }, lines: { type: 'boolean' }, keep: { type: 'boolean' },
           help: { type: 'boolean', short: 'h' }, version: { type: 'boolean', short: 'v' },
         },
       });
@@ -492,18 +565,20 @@ export async function main(io = {}) {
       return values.help ? 0 : 2;
     }
     let kind;
-    const commands = { frame: cmdFrame, media: cmdMedia, check: cmdCheck, parse: cmdParse, report: cmdReport, llms: cmdLlms, notion: cmdNotion, generate: (a, link, v, c) => cmdGenerate(a, kind, link, v, c) };
+    const commands = { frame: cmdFrame, media: cmdMedia, check: cmdCheck, parse: cmdParse, report: cmdReport, llms: cmdLlms, notion: cmdNotion, listen: cmdListen, generate: (a, link, v, c) => cmdGenerate(a, kind, link, v, c) };
     let [command, url, ...rest] = positionals;
     if (!Object.hasOwn(commands, command)) [command, url, rest] = ['llms', positionals[0], positionals.slice(1)];
     if (command === 'generate') [kind, url, ...rest] = [url, ...rest];
-    const what = { check: 'a site, a file or -: llms-ink check <site|file|->', parse: 'a file, - or a link: llms-ink parse <file|-|link>', generate: `a kind and a link: llms-ink generate <${KINDS.join('|')}> <link>`, notion: 'a link: llms-ink notion <link> --parent <page-id-or-url>' }[command];
+    const what = { listen: 'a live link: llms-ink listen <twitch, kick or youtube live link>', check: 'a site, a file or -: llms-ink check <site|file|->', parse: 'a file, - or a link: llms-ink parse <file|-|link>', generate: `a kind and a link: llms-ink generate <${KINDS.join('|')}> <link>`, notion: 'a link: llms-ink notion <link> --parent <page-id-or-url>' }[command];
     if (!url) throw new CliError(what ? `Give ${what}` : `Give a link: llms-ink ${command === 'llms' ? '' : `${command} `}<link>`, 2);
     if (rest.length) throw new CliError(`One link at a time (got “${rest[0]}” too).`, 2);
     const reads = command === 'check' || command === 'parse' || command === 'report';
     if (command !== 'llms' && command !== 'notion' && (values.full || (values.fresh && command !== 'generate') || values.generated || values.crawl !== undefined)) throw new CliError(`--full, --fresh, --generated and --crawl are for llms.txt, not ${command}.`, 2);
     // The API checks the upper bound (the deepest a site allows).
     if (values.crawl !== undefined && !/^\d+$/.test(values.crawl)) throw new CliError('--crawl: a whole number of items, like 10.', 2);
-    if (command !== 'llms' && command !== 'generate' && !reads && values.json) throw new CliError(`--json is for llms.txt, check, parse, report and generate, not ${command}.`, 2);
+    if (command !== 'llms' && command !== 'generate' && command !== 'listen' && !reads && values.json) throw new CliError(`--json is for llms.txt, check, parse, report, generate and listen, not ${command}.`, 2);
+    if (command !== 'listen' && (values.match !== undefined || values.until !== undefined || values.lines || values.keep)) throw new CliError('--match, --until, --lines and --keep are for listen.', 2);
+    if (command === 'listen' && values.output !== undefined) throw new CliError('listen prints as it goes; redirect it to save it.', 2);
     if (reads && values.output !== undefined) throw new CliError(`${command} prints its report; redirect it to save it.`, 2);
     if (command !== 'check' && command !== 'parse' && values.base !== undefined) throw new CliError('--base is for check and parse.', 2);
     if (command !== 'check' && values.links) throw new CliError('--links is for check.', 2);
@@ -512,7 +587,7 @@ export async function main(io = {}) {
     if (command !== 'notion' && (values.parent !== undefined || values.title !== undefined || values.token !== undefined)) throw new CliError('--parent, --title and --token are for notion.', 2);
     if (command === 'notion' && values.output !== undefined) throw new CliError('notion saves to Notion and prints the page URL; -o isn’t used.', 2);
     const api = client(values.api ?? env.LLMS_INK_API ?? DEFAULT_API, (values.key ?? env.LLMS_INK_KEY)?.trim(), io.fetch ?? fetch);
-    const ctx = { out, env, fetch: io.fetch ?? fetch, stdout, stdin: io.stdin ?? process.stdin, cwd: io.cwd ?? process.cwd(), progress: reporter(stderr, !!values.quiet) };
+    const ctx = { out, env, signal: io.signal, fetch: io.fetch ?? fetch, stdout, stdin: io.stdin ?? process.stdin, cwd: io.cwd ?? process.cwd(), progress: reporter(stderr, !!values.quiet) };
     return (await commands[command](api, url, values, ctx)) ?? 0;
   } catch (err) {
     if (err instanceof CliError) {

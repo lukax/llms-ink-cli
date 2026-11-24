@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.12.0 — 2026-11-24
+
+- Add `listen <live link>`: follow a YouTube live, Twitch or Kick stream and print one line per new section, finished summary, change in chat mood or status (`--json`: one object per line). `--match <re>` prints only matching events (transcript lines included) and status changes; `--until <re>` stops at the first match. `--lines` adds every transcript line; `--keep` starts a new session when one ends. Starting a session needs an API key; without one, `listen` follows a running session. Chat messages are never printed.
+
+## 0.11.0 — 2026-11-21
+
+- Breaking API change followed: `--fresh`, `--generated` and `check --links` now send `fresh=true`, `native=false` and `links=true`. The API rejects the `1`/`0` forms older versions send, so those three options need this version.
+
 ## 0.10.0 — 2026-11-18
 
 - Add `--crawl <n>`: how many of a channel's or profile's newest items llms.ink opens and describes (the API's `crawl`, 0–10). A depth other than the site's default is cached apart and counts as ceil(n ÷ default) new links when built.
